@@ -4,13 +4,25 @@
     name:
       - postgresql-server
       - postgresql-contrib
-      - python-psycopg2
+      - python3-psycopg2
     state: present
 
 - name: Initialize PostgreSQL database
   command: postgresql-setup initdb
   args:
     creates: /var/lib/pgsql/data/postgresql.conf
+
+- name: Configure PostgreSQL authentication
+  lineinfile:
+    path: /var/lib/pgsql/data/pg_hba.conf
+    regexp: '^{{ item.regexp }}'
+    line: '{{ item.line }}'
+    backup: yes
+  loop:
+    - { regexp: '^local\\s+all\\s+postgres\\s+peer', line: 'local all postgres peer' }
+    - { regexp: '^local\\s+all\\s+all\\s+peer', line: 'local all all md5' }
+    - { regexp: '^host\\s+all\\s+all\\s+127.0.0.1/32\\s+ident', line: 'host all all 127.0.0.1/32 md5' }
+    - { regexp: '^host\\s+all\\s+all\\s+::1/128\\s+ident', line: 'host all all ::1/128 md5' }
 
 - name: Start and enable PostgreSQL service
   systemd:
@@ -22,12 +34,16 @@
   postgresql_db:
     name: "{{ db_name }}"
     state: present
+  become: yes
+  become_user: postgres
 
 - name: Create database user
   postgresql_user:
     name: "{{ db_user }}"
     password: "{{ db_password }}"
     state: present
+  become: yes
+  become_user: postgres
 
 - name: Grant privileges to user
   postgresql_privs:
@@ -36,18 +52,26 @@
     privs: ALL
     type: database
     state: present
+  become: yes
+  become_user: postgres
 
 - name: Copy database initialization script
   copy:
-    src: files/init.sql
+    src: ../../../../db/init.sql
     dest: /tmp/init.sql
     owner: postgres
     group: postgres
     mode: 0644
 
 - name: Initialize database schema
+  become: yes
   become_user: postgres
   postgresql_query:
     db: "{{ db_name }}"
     path_to_script: /tmp/init.sql
+
+- name: Restart PostgreSQL to apply authentication changes
+  systemd:
+    name: postgresql
+    state: restarted
 ...
