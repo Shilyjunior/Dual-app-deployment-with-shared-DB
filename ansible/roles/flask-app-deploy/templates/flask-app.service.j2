@@ -6,12 +6,12 @@ After=network.target postgresql.service
 Type=simple
 User={{ app_user }}
 Group={{ app_user }}
-WorkingDirectory=/opt/apps/flask-app/current
+WorkingDirectory={{ flask_app_dir }}/current
 Environment=DB_HOST={{ db_host }}
 Environment=DB_NAME={{ db_name }}
 Environment=DB_USER={{ db_user }}
 Environment=DB_PASS={{ db_password }}
-ExecStart=/opt/apps/flask-app/current/venv/bin/python app.py
+ExecStart=/usr/bin/python3 app.py
 Restart=always
 RestartSec=10
 
