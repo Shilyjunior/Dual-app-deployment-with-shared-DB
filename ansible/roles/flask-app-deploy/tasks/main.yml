@@ -1,16 +1,4 @@
 ---
----
-- name: Ensure parent directories exist
-  file:
-    path: "{{ item }}"
-    state: directory
-    owner: "{{ app_user }}"
-    group: "{{ app_user }}"
-    mode: '0755'
-  loop:
-    - "{{ apps_base_dir }}"
-    - "{{ apps_base_dir }}/artifacts"
-
 - name: Create application directories
   file:
     path: "{{ item }}"
@@ -21,7 +9,6 @@
   loop:
     - "{{ flask_app_dir }}/versions"
     - "{{ flask_app_dir }}/shared"
-    - "{{ apps_base_dir }}/artifacts/flask-app"
 
 - name: Copy Flask app files
   copy:
@@ -29,18 +16,14 @@
     dest: "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}"
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
-    mode: '0644'
 
-- name: Create virtual environment using python3 -m venv
-  command: python3 -m venv "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}/venv"
-  args:
-    creates: "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}/venv/bin/python"
-
-- name: Install Python dependencies using pip from virtualenv
+- name: Install Flask dependencies system-wide
   pip:
-    requirements: "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}/requirements.txt"
-    virtualenv: "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}/venv"
-    virtualenv_command: python3 -m venv
+    name:
+      - Flask==2.3.2
+      - psycopg2-binary==2.9.9
+    executable: pip3
+    state: present
 
 - name: Create symbolic link for current version
   file:
