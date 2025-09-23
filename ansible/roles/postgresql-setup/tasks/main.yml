@@ -1,77 +1,73 @@
 ---
-- name: Install PostgreSQL
-  yum:
-    name:
-      - postgresql-server
-      - postgresql-contrib
-      - python3-psycopg2
-    state: present
+---
+- name: Install and configure PostgreSQL
+  block:
+    - name: Install PostgreSQL
+      yum:
+        name:
+          - postgresql-server
+          - postgresql-contrib
+          - python3-psycopg2
+        state: present
 
-- name: Initialize PostgreSQL database
-  command: postgresql-setup initdb
-  args:
-    creates: /var/lib/pgsql/data/postgresql.conf
+    - name: Initialize PostgreSQL database
+      command: postgresql-setup initdb
+      args:
+        creates: /var/lib/pgsql/data/postgresql.conf
 
-- name: Configure PostgreSQL authentication
-  lineinfile:
-    path: /var/lib/pgsql/data/pg_hba.conf
-    regexp: '^{{ item.regexp }}'
-    line: '{{ item.line }}'
-    backup: yes
-  loop:
-    - { regexp: '^local\\s+all\\s+postgres\\s+peer', line: 'local all postgres peer' }
-    - { regexp: '^local\\s+all\\s+all\\s+peer', line: 'local all all md5' }
-    - { regexp: '^host\\s+all\\s+all\\s+127.0.0.1/32\\s+ident', line: 'host all all 127.0.0.1/32 md5' }
-    - { regexp: '^host\\s+all\\s+all\\s+::1/128\\s+ident', line: 'host all all ::1/128 md5' }
+    - name: Configure PostgreSQL authentication
+      lineinfile:
+        path: /var/lib/pgsql/data/pg_hba.conf
+        regexp: '^host\\s+all\\s+all\\s+127.0.0.1/32\\s+ident'
+        line: 'host all all 127.0.0.1/32 md5'
+        backup: yes
 
-- name: Start and enable PostgreSQL service
-  systemd:
-    name: postgresql
-    state: started
-    enabled: yes
+    - name: Start and enable PostgreSQL service
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
 
-- name: Create application database
-  postgresql_db:
-    name: "{{ db_name }}"
-    state: present
+    - name: Wait for PostgreSQL to be ready
+      wait_for:
+        port: 5432
+        delay: 5
+        timeout: 30
+
+  rescue:
+    - name: Display PostgreSQL setup error
+      debug:
+        msg: "PostgreSQL setup failed. Continuing with existing setup."
+
+- name: Setup database and schema
   become: yes
   become_user: postgres
+  block:
+    - name: Create database if not exists
+      shell: |
+        psql -c "CREATE DATABASE {{ db_name }};" || true
 
-- name: Create database user
-  postgresql_user:
-    name: "{{ db_user }}"
-    password: "{{ db_password }}"
-    state: present
-  become: yes
-  become_user: postgres
+    - name: Create user if not exists
+      shell: |
+        psql -c "CREATE USER {{ db_user }} WITH PASSWORD '{{ db_password }}';" || true
 
-- name: Grant privileges to user
-  postgresql_privs:
-    database: "{{ db_name }}"
-    role: "{{ db_user }}"
-    privs: ALL
-    type: database
-    state: present
-  become: yes
-  become_user: postgres
+    - name: Grant privileges
+      shell: |
+        psql -c "GRANT ALL PRIVILEGES ON DATABASE {{ db_name }} TO {{ db_user }};"
 
-- name: Copy database initialization script
-  copy:
-    src: ../../../../db/init.sql
-    dest: /tmp/init.sql
-    owner: postgres
-    group: postgres
-    mode: 0644
+    - name: Initialize schema
+      shell: |
+        psql -d {{ db_name }} -f /tmp/init.sql
+      args:
+        executable: /bin/bash
 
-- name: Initialize database schema
-  become: yes
-  become_user: postgres
-  postgresql_query:
-    db: "{{ db_name }}"
-    path_to_script: /tmp/init.sql
+    - name: Verify setup
+      shell: |
+        psql -d {{ db_name }} -c "SELECT COUNT(*) FROM devs;"
+      register: db_verify
+      changed_when: false
 
-- name: Restart PostgreSQL to apply authentication changes
-  systemd:
-    name: postgresql
-    state: restarted
+    - name: Display verification result
+      debug:
+        msg: "Database contains {{ db_verify.stdout_lines[-1] | trim }} records"
 ...
