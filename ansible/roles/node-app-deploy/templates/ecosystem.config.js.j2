@@ -1,0 +1,18 @@
+module.exports = {
+  apps: [{
+    name: 'node-shared-db-app',
+    script: 'index.js',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '1G',
+    env: {
+      NODE_ENV: 'production',
+      DB_HOST: '{{ db_host }}',
+      DB_USER: '{{ db_user }}',
+      DB_PASSWORD: '{{ db_password }}',
+      DB_NAME: '{{ db_name }}',
+      PORT: 3000
+    }
+  }]
+}

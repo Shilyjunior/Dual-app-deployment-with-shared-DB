@@ -1,0 +1,17 @@
+---
+- name: Deploy Flask and Node.js apps with shared DB
+  hosts: g1
+  become: yes
+  vars:
+    flask_app_version: "1.0.0"
+    node_app_version: "1.0.0"
+    db_host: "localhost"
+    db_name: "sharedappdb"
+    db_user: "devops"
+    db_password: "password"
+  
+  roles:
+    - postgresql-setup
+    - flask-app-deploy
+    - node-app-deploy
+...

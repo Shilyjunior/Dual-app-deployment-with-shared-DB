@@ -1,0 +1,62 @@
+---
+- name: Create application directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+  loop:
+    - /opt/apps/node-app/versions
+    - /opt/apps/node-app/shared
+    - /opt/apps/artifacts/node-app
+
+- name: Download Node.js app artifact
+  get_url:
+    url: "{{ jenkins_artifact_url }}/node-app-{{ node_app_version }}.tar.gz"
+    dest: /opt/apps/artifacts/node-app/node-app-{{ node_app_version }}.tar.gz
+
+- name: Extract Node.js app
+  unarchive:
+    src: /opt/apps/artifacts/node-app/node-app-{{ node_app_version }}.tar.gz
+    dest: /opt/apps/node-app/versions/
+    remote_src: yes
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+
+- name: Install Node.js dependencies
+  npm:
+    path: /opt/apps/node-app/versions/node-app-{{ node_app_version }}
+    state: present
+
+- name: Create symbolic link for current version
+  file:
+    src: /opt/apps/node-app/versions/node-app-{{ node_app_version }}
+    dest: /opt/apps/node-app/current
+    state: link
+    force: yes
+
+- name: Install PM2 globally
+  npm:
+    name: pm2
+    global: yes
+    state: present
+
+- name: Setup PM2 ecosystem file
+  template:
+    src: ecosystem.config.js.j2
+    dest: /opt/apps/node-app/current/ecosystem.config.js
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+
+- name: Start Node.js app with PM2
+  command: pm2 start /opt/apps/node-app/current/ecosystem.config.js
+  become_user: "{{ app_user }}"
+
+- name: Setup PM2 startup script
+  command: pm2 startup
+  become_user: "{{ app_user }}"
+
+- name: Save PM2 process list
+  command: pm2 save
+  become_user: "{{ app_user }}"
+...

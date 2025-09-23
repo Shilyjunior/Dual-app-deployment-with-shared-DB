@@ -1,0 +1,51 @@
+---
+- name: Create application directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+  loop:
+    - /opt/apps/flask-app/versions
+    - /opt/apps/flask-app/shared
+    - /opt/apps/artifacts/flask-app
+
+- name: Download Flask app artifact
+  get_url:
+    url: "{{ jenkins_artifact_url }}/flask-app-{{ flask_app_version }}.tar.gz"
+    dest: /opt/apps/artifacts/flask-app/flask-app-{{ flask_app_version }}.tar.gz
+
+- name: Extract Flask app
+  unarchive:
+    src: /opt/apps/artifacts/flask-app/flask-app-{{ flask_app_version }}.tar.gz
+    dest: /opt/apps/flask-app/versions/
+    remote_src: yes
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+
+- name: Create virtual environment
+  pip:
+    virtualenv: /opt/apps/flask-app/versions/flask-app-{{ flask_app_version }}/venv
+    virtualenv_python: python3
+    requirements: /opt/apps/flask-app/versions/flask-app-{{ flask_app_version }}/requirements.txt
+
+- name: Create symbolic link for current version
+  file:
+    src: /opt/apps/flask-app/versions/flask-app-{{ flask_app_version }}
+    dest: /opt/apps/flask-app/current
+    state: link
+    force: yes
+
+- name: Create Flask systemd service
+  template:
+    src: flask-app.service.j2
+    dest: /etc/systemd/system/flask-app.service
+  notify: reload systemd
+
+- name: Start and enable Flask service
+  systemd:
+    name: flask-app
+    state: started
+    enabled: yes
+    daemon_reload: yes
+...

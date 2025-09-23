@@ -1,0 +1,17 @@
+---
+# Database configuration
+db_host: "localhost"
+db_name: "sharedappdb"
+db_user: "devops"
+db_password: "password"
+
+# Application configuration
+app_user: "devops"
+flask_app_port: 5000
+node_app_port: 3000
+
+# Deployment paths
+apps_base_dir: "/opt/apps"
+flask_app_dir: "{{ apps_base_dir }}/flask-app"
+node_app_dir: "{{ apps_base_dir }}/node-app"
+...

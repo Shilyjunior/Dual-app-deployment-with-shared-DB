@@ -1,0 +1,53 @@
+---
+- name: Install PostgreSQL
+  yum:
+    name:
+      - postgresql-server
+      - postgresql-contrib
+      - python-psycopg2
+    state: present
+
+- name: Initialize PostgreSQL database
+  command: postgresql-setup initdb
+  args:
+    creates: /var/lib/pgsql/data/postgresql.conf
+
+- name: Start and enable PostgreSQL service
+  systemd:
+    name: postgresql
+    state: started
+    enabled: yes
+
+- name: Create application database
+  postgresql_db:
+    name: "{{ db_name }}"
+    state: present
+
+- name: Create database user
+  postgresql_user:
+    name: "{{ db_user }}"
+    password: "{{ db_password }}"
+    state: present
+
+- name: Grant privileges to user
+  postgresql_privs:
+    database: "{{ db_name }}"
+    role: "{{ db_user }}"
+    privs: ALL
+    type: database
+    state: present
+
+- name: Copy database initialization script
+  copy:
+    src: files/init.sql
+    dest: /tmp/init.sql
+    owner: postgres
+    group: postgres
+    mode: 0644
+
+- name: Initialize database schema
+  become_user: postgres
+  postgresql_query:
+    db: "{{ db_name }}"
+    path_to_script: /tmp/init.sql
+...

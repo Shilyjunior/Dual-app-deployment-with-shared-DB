@@ -1,0 +1,19 @@
+[Unit]
+Description=Flask Shared DB Application
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory=/opt/apps/flask-app/current
+Environment=DB_HOST={{ db_host }}
+Environment=DB_NAME={{ db_name }}
+Environment=DB_USER={{ db_user }}
+Environment=DB_PASS={{ db_password }}
+ExecStart=/opt/apps/flask-app/current/venv/bin/python app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
