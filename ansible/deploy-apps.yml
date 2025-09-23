@@ -1,8 +1,8 @@
 ---
 - name: Deploy Flask and Node.js apps with shared DB
-  hosts: g1
+  hosts: all
   become: yes
-vars:
+  vars:
     # Versions (passed from Jenkins)
     flask_app_version: "{{ flask_version | default('1.0.0') }}"
     node_app_version: "{{ node_version | default('1.0.0') }}"
