@@ -29,25 +29,63 @@ pipeline {
     }
     
     stages {
-        stage('Checkout and Explore') {
+        stage('Explore Repository') {
             steps {
-                checkout scm
                 script {
-                    echo "✅ Repository cloned successfully"
+                    echo "🔍 Exploring repository structure..."
                     sh '''
-                        echo "=== Repository Structure ==="
-                        ls -la
+                        echo "=== Detailed Structure ==="
+                        echo "Ansible directory:"
+                        ls -la ansible/
                         echo ""
-                        echo "=== Checking for key directories ==="
-                        [ -d "apps" ] && echo "✅ apps directory exists" || echo "❌ apps directory missing"
-                        [ -d "db" ] && echo "✅ db directory exists" || echo "❌ db directory missing"
-                        [ -d "jenkins" ] && echo "✅ jenkins directory exists" || echo "❌ jenkins directory missing"
-                        [ -d "scripts" ] && echo "✅ scripts directory exists" || echo "❌ scripts directory missing"
+                        echo "Apps directory:"
+                        ls -la apps/
+                        echo ""
+                        echo "DB directory:"
+                        ls -la db/
+                        echo ""
+                        echo "Scripts directory:"
+                        ls -la scripts/
                         
                         echo ""
-                        echo "=== Searching for application files ==="
-                        find . -name "app.py" -o -name "index.js" -o -name "init.sql" -o -name "*.yml" -o -name "*.yaml" | head -20
+                        echo "=== Ansible Files ==="
+                        find ansible/ -type f -name "*.yml" -o -name "*.yaml" -o -name "*.ini" | sort
+                        
+                        echo ""
+                        echo "=== Application Files ==="
+                        find apps/ -type f -name "*.py" -o -name "*.js" -o -name "*.html" -o -name "*.json" | sort
+                        
+                        echo ""
+                        echo "=== Database Files ==="
+                        find db/ -type f -name "*.sql" | sort
                     '''
+                }
+            }
+        }
+        
+        stage('Validate Configuration') {
+            steps {
+                script {
+                    echo "✅ Validating configuration files..."
+                    
+                    // Check critical files
+                    def criticalFiles = [
+                        'ansible/deploy-apps.yml': 'Main Ansible playbook',
+                        'ansible/inventory/host.ini': 'Ansible inventory',
+                        'apps/flask-app/app.py': 'Flask application',
+                        'apps/node-app/index.js': 'Node.js application',
+                        'db/init.sql': 'Database initialization'
+                    ]
+                    
+                    criticalFiles.each { file, description ->
+                        if (fileExists(file)) {
+                            echo "✅ FOUND: ${description} (${file})"
+                            // Show file content preview
+                            sh "echo '--- ${file} preview ---' && head -5 ${file} 2>/dev/null || echo 'Cannot preview'"
+                        } else {
+                            echo "❌ MISSING: ${description} (${file})"
+                        }
+                    }
                 }
             }
         }
@@ -55,37 +93,37 @@ pipeline {
         stage('Build Artifacts') {
             steps {
                 script {
-                    echo "🏗️ Building application artifacts..."
-                    
-                    // Create artifacts directory
+                    echo "🏗️ Building deployment artifacts..."
                     sh 'mkdir -p artifacts'
                     
+                    // Build Flask artifact
                     if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
                         sh """
-                            echo "Building Flask app v${params.FLASK_VERSION}"
-                            # Check if Flask app exists
-                            if [ -f "apps/flask-app/app.py" ]; then
-                                tar -czf artifacts/flask-app-${params.FLASK_VERSION}.tar.gz -C apps/flask-app/ .
-                                echo "✅ Flask artifact created successfully"
-                                tar -tzf artifacts/flask-app-${params.FLASK_VERSION}.tar.gz
+                            if [ -d "apps/flask-app" ]; then
+                                echo "Building Flask app v${params.FLASK_VERSION}"
+                                tar -czf artifacts/flask-app-${params.FLASK_VERSION}.tar.gz -C apps/flask-app .
+                                echo "✅ Flask artifact created"
+                                echo "Contents:"
+                                tar -tzf artifacts/flask-app-${params.FLASK_VERSION}.tar.gz | head -10
                             else
-                                echo "❌ Flask app files not found at apps/flask-app/"
-                                find apps/ -name "*.py" | head -5
+                                echo "❌ Flask app directory not found"
+                                find apps/ -type d -name "*flask*" | head -5
                             fi
                         """
                     }
                     
+                    // Build Node.js artifact
                     if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
                         sh """
-                            echo "Building Node.js app v${params.NODE_VERSION}"
-                            # Check if Node.js app exists
-                            if [ -f "apps/node-app/index.js" ]; then
-                                tar -czf artifacts/node-app-${params.NODE_VERSION}.tar.gz -C apps/node-app/ .
-                                echo "✅ Node.js artifact created successfully"
-                                tar -tzf artifacts/node-app-${params.NODE_VERSION}.tar.gz
+                            if [ -d "apps/node-app" ]; then
+                                echo "Building Node.js app v${params.NODE_VERSION}"
+                                tar -czf artifacts/node-app-${params.NODE_VERSION}.tar.gz -C apps/node-app .
+                                echo "✅ Node.js artifact created"
+                                echo "Contents:"
+                                tar -tzf artifacts/node-app-${params.NODE_VERSION}.tar.gz | head -10
                             else
-                                echo "❌ Node.js app files not found at apps/node-app/"
-                                find apps/ -name "*.js" | head -5
+                                echo "❌ Node.js app directory not found"
+                                find apps/ -type d -name "*node*" | head -5
                             fi
                         """
                     }
@@ -93,99 +131,117 @@ pipeline {
             }
         }
         
-        stage('Validate Ansible Setup') {
+        stage('Test Ansible Connection') {
             steps {
                 script {
-                    echo "🔍 Validating Ansible configuration..."
+                    echo "🔌 Testing Ansible connectivity..."
                     
-                    sh '''
-                        echo "=== Checking for Ansible files ==="
-                        [ -f "ansible/deploy-apps.yml" ] && echo "✅ Main playbook exists" || echo "❌ Main playbook missing"
-                        [ -f "ansible/inventory/host.ini" ] && echo "✅ Inventory exists" || echo "❌ Inventory missing"
-                        
-                        echo ""
-                        echo "=== Current directory structure ==="
-                        find . -type f -name "*.yml" -o -name "*.yaml" -o -name "*.ini" | sort
-                    '''
-                    
-                    // Check if we have the expected Ansible structure
-                    def hasAnsible = fileExists('ansible/deploy-apps.yml')
-                    if (!hasAnsible) {
-                        echo "⚠️ Ansible structure not found. Creating basic structure..."
+                    if (fileExists('ansible/inventory/host.ini')) {
                         sh '''
-                            mkdir -p ansible/inventory
-                            mkdir -p ansible/roles
-                            echo "# Placeholder - update with your actual playbook" > ansible/deploy-apps.yml
-                            echo "# Placeholder inventory" > ansible/inventory/host.ini
+                            echo "=== Inventory File ==="
+                            cat ansible/inventory/host.ini
+                            
+                            echo ""
+                            echo "=== Testing Ansible Ping ==="
+                            cd ansible
+                            if ansible -i inventory/host.ini all -m ping; then
+                                echo "✅ Ansible connectivity test PASSED"
+                            else
+                                echo "❌ Ansible connectivity test FAILED"
+                                echo "This is normal if target server is not configured yet"
+                            fi
+                        '''
+                    } else {
+                        echo "⚠️ No inventory file found - skipping Ansible test"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy Applications') {
+            when {
+                expression { !params.DRY_RUN }
+            }
+            steps {
+                script {
+                    echo "🚀 Deploying applications..."
+                    
+                    if (fileExists('ansible/deploy-apps.yml') && fileExists('ansible/inventory/host.ini')) {
+                        sh """
+                            cd ansible
+                            echo "=== Starting Ansible Deployment ==="
+                            ansible-playbook -i inventory/host.ini deploy-apps.yml \
+                                --extra-vars "flask_version=${params.FLASK_VERSION} node_version=${params.NODE_VERSION} deployment_type=${params.APP_TYPE}" \
+                                --verbose
+                            echo "✅ Ansible deployment completed"
+                        """
+                    } else {
+                        echo "⚠️ Ansible playbook or inventory missing - deploying manually"
+                        
+                        // Provide manual deployment instructions
+                        sh '''
+                            echo "=== MANUAL DEPLOYMENT INSTRUCTIONS ==="
+                            echo "1. Ensure target server is accessible via SSH"
+                            echo "2. Install required packages:"
+                            echo "   sudo yum install -y postgresql-server python3 nodejs"
+                            echo "3. Set up database using: db/init.sql"
+                            echo "4. Deploy Flask app to port 5000"
+                            echo "5. Deploy Node.js app to port 3000"
                         '''
                     }
                 }
             }
         }
         
-        stage('Manual Deployment Instructions') {
-            steps {
-                script {
-                    echo "📋 Deployment Instructions"
-                    echo """
-                    =================================================================
-                    MANUAL DEPLOYMENT STEPS (Ansible automation not fully configured)
-                    =================================================================
-                    
-                    Based on your repository structure, here are the manual steps:
-                    
-                    1. APPLICATION FILES FOUND:
-                    $(find . -name "app.py" -o -name "index.js" -o -name "init.sql" 2>/dev/null | sort)
-                    
-                    2. MANUAL DEPLOYMENT:
-                    - Copy application files to target server
-                    - Set up PostgreSQL database using db/init.sql
-                    - Configure Flask app on port 5000
-                    - Configure Node.js app on port 3000
-                    
-                    3. QUICK DEPLOYMENT COMMANDS:
-                    # On target server:
-                    sudo yum install -y postgresql-server python3 nodejs
-                    sudo postgresql-setup initdb
-                    sudo systemctl start postgresql
-                    
-                    4. TEST ENDPOINTS:
-                    - Flask: http://<server-ip>:5000
-                    - Node.js: http://<server-ip>:3000
-                    
-                    =================================================================
-                    """
-                }
-            }
-        }
-        
-        stage('Simple Ansible Test') {
+        stage('Verify Deployment') {
             when {
-                expression { 
-                    fileExists('ansible/deploy-apps.yml') && 
-                    fileExists('ansible/inventory/host.ini') 
-                }
+                expression { !params.DRY_RUN }
             }
             steps {
                 script {
-                    echo "🚀 Testing Ansible connectivity..."
+                    echo "🔍 Verifying deployment..."
                     
-                    sh '''
-                        cd ansible
-                        echo "=== Testing inventory ==="
-                        cat inventory/host.ini
-                        
-                        echo "=== Testing Ansible ping ==="
-                        ansible -i inventory/host.ini all -m ping || echo "Ansible ping failed"
-                        
-                        if [ "${DRY_RUN}" = "true" ]; then
-                            echo "=== Dry run mode ==="
-                            ansible-playbook -i inventory/host.ini deploy-apps.yml --check --verbose || echo "Dry run completed"
-                        else
-                            echo "=== Actual deployment ==="
-                            ansible-playbook -i inventory/host.ini deploy-apps.yml --extra-vars "flask_version=${FLASK_VERSION} node_version=${NODE_VERSION} deployment_type=${APP_TYPE}" --verbose || echo "Deployment completed"
-                        fi
-                    '''
+                    // Extract target IP from inventory
+                    def targetIP = sh(
+                        script: '''
+                            grep -oE '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' ansible/inventory/host.ini | head -1 || echo "127.0.0.1"
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "Target server IP: ${targetIP}"
+                    
+                    // Test Flask app
+                    if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
+                        sh """
+                            echo "Testing Flask app on ${targetIP}:5000..."
+                            for i in {1..5}; do
+                                if curl -f -s --connect-timeout 10 http://${targetIP}:5000; then
+                                    echo "✅ Flask app is RUNNING"
+                                    break
+                                else
+                                    echo "⏳ Attempt \$i: Flask app not ready..."
+                                    sleep 10
+                                fi
+                            done
+                        """
+                    }
+                    
+                    // Test Node.js app
+                    if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
+                        sh """
+                            echo "Testing Node.js app on ${targetIP}:3000..."
+                            for i in {1..5}; do
+                                if curl -f -s --connect-timeout 10 http://${targetIP}:3000; then
+                                    echo "✅ Node.js app is RUNNING"
+                                    break
+                                else
+                                    echo "⏳ Attempt \$i: Node.js app not ready..."
+                                    sleep 10
+                                fi
+                            done
+                        """
+                    }
                 }
             }
         }
@@ -195,48 +251,71 @@ pipeline {
         always {
             echo "🏁 Pipeline execution completed"
             script {
-                // Archive artifacts if they were created
+                // Archive artifacts
                 if (fileExists('artifacts')) {
                     archiveArtifacts artifacts: 'artifacts/*.tar.gz', fingerprint: true
                 }
                 
-                // Create build report
+                // Create deployment report
                 sh """
-                    echo "=== BUILD REPORT ===" > build-report.txt
-                    echo "Timestamp: \$(date)" >> build-report.txt
-                    echo "Status: ${currentBuild.result ?: 'SUCCESS'}" >> build-report.txt
-                    echo "Application Type: ${params.APP_TYPE}" >> build-report.txt
-                    echo "Flask Version: ${params.FLASK_VERSION}" >> build-report.txt
-                    echo "Node Version: ${params.NODE_VERSION}" >> build-report.txt
-                    echo "Dry Run: ${params.DRY_RUN}" >> build-report.txt
-                    echo "" >> build-report.txt
-                    echo "=== Files Processed ===" >> build-report.txt
-                    find . -name "*.py" -o -name "*.js" -o -name "*.sql" -o -name "*.tar.gz" 2>/dev/null | sort >> build-report.txt
+                    echo "=== DEPLOYMENT REPORT ===" > report.txt
+                    echo "Timestamp: \$(date)" >> report.txt
+                    echo "Status: ${currentBuild.result ?: 'SUCCESS'}" >> report.txt
+                    echo "Applications: ${params.APP_TYPE}" >> report.txt
+                    echo "Flask Version: ${params.FLASK_VERSION}" >> report.txt
+                    echo "Node Version: ${params.NODE_VERSION}" >> report.txt
+                    echo "Dry Run: ${params.DRY_RUN}" >> report.txt
+                    echo "" >> report.txt
+                    echo "=== Repository Structure ===" >> report.txt
+                    find . -type f -name "*.py" -o -name "*.js" -o -name "*.sql" -o -name "*.yml" -o -name "*.yaml" | sort >> report.txt
                 """
-                archiveArtifacts artifacts: 'build-report.txt', fingerprint: true
+                archiveArtifacts artifacts: 'report.txt', fingerprint: true
+                
+                // Show final structure
+                sh '''
+                    echo "=== Final Workspace Structure ==="
+                    find . -type f | grep -v .git | sort
+                '''
             }
         }
         
         success {
-            echo "✅ Pipeline executed successfully!"
+            echo "🎉 Pipeline executed successfully!"
+            
             script {
                 if (params.DRY_RUN) {
-                    echo "📋 Dry run completed - no changes were made to servers"
+                    echo "📋 Dry run completed - ready for actual deployment"
                 } else {
-                    echo "🎉 Deployment completed successfully!"
+                    echo "✅ Applications deployed successfully!"
+                    
+                    // Get target IP for success message
+                    def targetIP = sh(
+                        script: '''
+                            grep -oE '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' ansible/inventory/host.ini | head -1 || echo "TARGET_SERVER"
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "Access your applications at:"
+                    if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
+                        echo "Flask App: http://${targetIP}:5000"
+                    }
+                    if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
+                        echo "Node.js App: http://${targetIP}:3000"
+                    }
                 }
             }
         }
         
         failure {
-            echo "❌ Pipeline failed!"
-            // Provide helpful error information
+            echo "❌ Pipeline execution failed"
             sh '''
-                echo "=== Troubleshooting Tips ==="
-                echo "1. Check if application files exist in the correct locations"
+                echo "=== TROUBLESHOOTING TIPS ==="
+                echo "1. Check if all required files exist in the repository"
                 echo "2. Verify Ansible inventory file configuration"
-                echo "3. Check SSH connectivity to target servers"
-                echo "4. Review the console output for specific error messages"
+                echo "3. Ensure target server is accessible via SSH"
+                echo "4. Check application logs on the target server"
+                echo "5. Review the console output above for specific errors"
             '''
         }
     }
