@@ -28,20 +28,13 @@
         owner: "{{ app_user }}"
         group: "{{ app_user }}"
 
-    - name: Install Python and virtual environment tools
+    - name: Install Python and development tools
       package:
         name:
           - python3
           - python3-pip
-          - python3-virtualenv
-        state: present
-
-
-    - name: Install Python packages using pip
-      pip:
-        name:
-          - virtualenv
-        executable: pip3
+          - python3-devel
+          - gcc
         state: present
 
     - name: Install Node.js

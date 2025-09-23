@@ -1,4 +1,5 @@
 ---
+---
 - name: Ensure parent directories exist
   file:
     path: "{{ item }}"
@@ -29,11 +30,6 @@
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
     mode: '0644'
-
-- name: Install Python3 if not present
-  package:
-    name: python3
-    state: present
 
 - name: Create virtual environment using python3 -m venv
   command: python3 -m venv "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}/venv"
