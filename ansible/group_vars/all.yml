@@ -14,4 +14,9 @@ node_app_port: 3000
 apps_base_dir: "/opt/apps"
 flask_app_dir: "{{ apps_base_dir }}/flask-app"
 node_app_dir: "{{ apps_base_dir }}/node-app"
+
+# Version defaults
+flask_version: "1.0.0"
+node_version: "1.0.0"
+
 ...

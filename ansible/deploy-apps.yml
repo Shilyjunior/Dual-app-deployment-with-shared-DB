@@ -2,16 +2,33 @@
 - name: Deploy Flask and Node.js apps with shared DB
   hosts: g1
   become: yes
-  vars:
-    flask_app_version: "1.0.0"
-    node_app_version: "1.0.0"
+vars:
+    # Versions (passed from Jenkins)
+    flask_app_version: "{{ flask_version | default('1.0.0') }}"
+    node_app_version: "{{ node_version | default('1.0.0') }}"
+    
+    # Deployment type control
+    app_type: "{{ deployment_type | default('both') }}"
+    
+    # Database configuration
     db_host: "localhost"
     db_name: "sharedappdb"
     db_user: "devops"
     db_password: "password"
-  
+    
+    # Application user
+    app_user: "devops"
+    
+    # Paths
+    apps_base_dir: "/opt/apps"
+    flask_app_dir: "{{ apps_base_dir }}/flask-app"
+    node_app_dir: "{{ apps_base_dir }}/node-app"
+
   roles:
     - postgresql-setup
+    
     - flask-app-deploy
+      when: app_type == "flask" or app_type == "both"
+    
     - node-app-deploy
 ...
