@@ -69,4 +69,22 @@
     - name: Display verification result
       debug:
         msg: "Database contains {{ db_verify.stdout_lines[-1] | trim }} records"
+
+    - name: Create application user
+      user:
+      name: "{{ app_user }}"
+      comment: "Application Deployment User"
+      home: "/home/{{ app_user }}"
+      shell: /bin/bash
+      state: present
+      create_home: yes
+      system: no
+
+    - name: Create application directories with proper ownership
+      file:
+      path: "{{ apps_base_dir }}"
+      state: directory
+      owner: "{{ app_user }}"
+      group: "{{ app_user }}"
+      mode: '0755'
 ...

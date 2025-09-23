@@ -1,10 +1,22 @@
 ---
+- name: Ensure parent directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0755'
+  loop:
+    - "{{ apps_base_dir }}"
+    - "{{ apps_base_dir }}/artifacts"
+
 - name: Create application directories
   file:
     path: "{{ item }}"
     state: directory
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
+    mode: '0755'
   loop:
     - "{{ node_app_dir }}/versions"
     - "{{ node_app_dir }}/shared"
@@ -16,6 +28,7 @@
     dest: "{{ node_app_dir }}/versions/node-app-{{ node_app_version }}"
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
+    mode: '0644'
 
 - name: Install Node.js dependencies
   npm:
@@ -41,16 +54,20 @@
     dest: "{{ node_app_dir }}/current/ecosystem.config.js"
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
+    mode: '0644'
 
 - name: Start Node.js app with PM2
   command: pm2 start "{{ node_app_dir }}/current/ecosystem.config.js"
+  become: yes
   become_user: "{{ app_user }}"
 
 - name: Setup PM2 startup script
   command: pm2 startup
+  become: yes
   become_user: "{{ app_user }}"
 
 - name: Save PM2 process list
   command: pm2 save
+  become: yes
   become_user: "{{ app_user }}"
 ...
