@@ -36,6 +36,14 @@
           - python3-virtualenv
         state: present
 
+
+    - name: Install Python packages using pip
+      pip:
+        name:
+          - virtualenv
+        executable: pip3
+        state: present
+
     - name: Install Node.js
       package:
         name:
