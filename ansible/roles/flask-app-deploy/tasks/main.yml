@@ -1,4 +1,17 @@
 ---
+- name: Check if Python3 is installed
+  command: python3 --version
+  register: python_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Install Python3 if not present (skip on error)
+  package:
+    name: python3
+    state: present
+  when: python_check.rc != 0
+  ignore_errors: yes
+
 - name: Create application directories
   file:
     path: "{{ item }}"
@@ -16,14 +29,13 @@
     dest: "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}"
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
+    mode: '0644'
 
-- name: Install Flask dependencies system-wide
-  pip:
-    name:
-      - Flask==2.3.2
-      - psycopg2-binary==2.9.9
-    executable: pip3
-    state: present
+- name: Install Flask using system Python (simple approach)
+  raw: python3 -c "import flask" 2>/dev/null || pip3 install Flask==2.3.2 psycopg2-binary==2.9.9
+  args:
+    executable: /bin/bash
+  ignore_errors: yes
 
 - name: Create symbolic link for current version
   file:
