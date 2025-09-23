@@ -37,17 +37,8 @@
           - gcc
         state: present
 
-    - name: Add Node.js repository
-      package:
-        name: epel-release
-        state: present
-
-    - name: Install Node.js from EPEL repository
-      package:
-        name:
-          - nodejs
-          - npm
-        state: present
+    # Let the node-app-deploy role handle Node.js installation
+    # This way if it fails, it won't block Flask app deployment
 
   roles:
     - postgresql-setup

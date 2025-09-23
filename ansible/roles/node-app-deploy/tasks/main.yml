@@ -1,14 +1,30 @@
 ---
-- name: Ensure parent directories exist
-  file:
-    path: "{{ item }}"
-    state: directory
-    owner: "{{ app_user }}"
-    group: "{{ app_user }}"
-    mode: '0755'
-  loop:
-    - "{{ apps_base_dir }}"
-    - "{{ apps_base_dir }}/artifacts"
+- name: Check if Node.js is installed
+  command: node --version
+  register: nodejs_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Install Node.js if not present
+  block:
+    - name: Install prerequisite packages
+      package:
+        name:
+          - curl
+          - epel-release
+        state: present
+
+    - name: Add Node.js repository
+      shell: |
+        curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+      args:
+        creates: /etc/yum.repos.d/nodesource-el9.repo
+
+    - name: Install Node.js
+      package:
+        name: nodejs
+        state: present
+  when: nodejs_check.rc != 0
 
 - name: Create application directories
   file:
@@ -20,7 +36,6 @@
   loop:
     - "{{ node_app_dir }}/versions"
     - "{{ node_app_dir }}/shared"
-    - "{{ apps_base_dir }}/artifacts/node-app"
 
 - name: Copy Node.js app files
   copy:
@@ -28,19 +43,11 @@
     dest: "{{ node_app_dir }}/versions/node-app-{{ node_app_version }}"
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
-    mode: '0644'
 
 - name: Install Node.js dependencies
   npm:
     path: "{{ node_app_dir }}/versions/node-app-{{ node_app_version }}"
     state: present
-
-- name: Create symbolic link for current version
-  file:
-    src: "{{ node_app_dir }}/versions/node-app-{{ node_app_version }}"
-    dest: "{{ node_app_dir }}/current"
-    state: link
-    force: yes
 
 - name: Install PM2 globally
   npm:
@@ -48,25 +55,17 @@
     global: yes
     state: present
 
-- name: Setup PM2 ecosystem file
-  template:
-    src: ecosystem.config.js.j2
-    dest: "{{ node_app_dir }}/current/ecosystem.config.js"
-    owner: "{{ app_user }}"
-    group: "{{ app_user }}"
-    mode: '0644'
-
-- name: Start Node.js app with PM2
-  command: pm2 start "{{ node_app_dir }}/current/ecosystem.config.js"
+- name: Start Node.js application with PM2
+  command: pm2 start "{{ node_app_dir }}/versions/node-app-{{ node_app_version }}/index.js" --name node-app
   become: yes
   become_user: "{{ app_user }}"
 
-- name: Setup PM2 startup script
+- name: Setup PM2 to start on boot
   command: pm2 startup
   become: yes
   become_user: "{{ app_user }}"
 
-- name: Save PM2 process list
+- name: Save PM2 configuration
   command: pm2 save
   become: yes
   become_user: "{{ app_user }}"
