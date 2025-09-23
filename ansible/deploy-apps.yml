@@ -1,5 +1,4 @@
 ---
----
 - name: Deploy Flask and Node.js apps with shared DB
   hosts: g1
   become: yes
