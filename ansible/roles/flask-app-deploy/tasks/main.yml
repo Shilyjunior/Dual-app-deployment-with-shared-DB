@@ -1,15 +1,4 @@
 ---
-- name: Ensure parent directories exist
-  file:
-    path: "{{ item }}"
-    state: directory
-    owner: "{{ app_user }}"
-    group: "{{ app_user }}"
-    mode: '0755'
-  loop:
-    - "{{ apps_base_dir }}"
-    - "{{ apps_base_dir }}/artifacts"
-
 - name: Create application directories
   file:
     path: "{{ item }}"
@@ -20,7 +9,6 @@
   loop:
     - "{{ flask_app_dir }}/versions"
     - "{{ flask_app_dir }}/shared"
-    - "{{ apps_base_dir }}/artifacts/flask-app"
 
 - name: Copy Flask app files
   copy:
@@ -28,14 +16,20 @@
     dest: "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}"
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
-    mode: '0644'
 
-- name: Create virtual environment
+- name: Install Python3 and required packages
+  package:
+    name:
+      - python3
+      - python3-pip
+    state: present
+
+- name: Install Flask dependencies using system pip
   pip:
-    virtualenv: "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}/venv"
-    virtualenv_python: python3
-    requirements: "{{ flask_app_dir }}/versions/flask-app-{{ flask_app_version }}/requirements.txt"
-    virtualenv_site_packages: yes
+    name:
+      - Flask==2.3.2
+      - psycopg2-binary==2.9.9
+    executable: pip3
 
 - name: Create symbolic link for current version
   file:
@@ -49,7 +43,6 @@
     src: flask-app.service.j2
     dest: /etc/systemd/system/flask-app.service
     mode: '0644'
-  notify: restart flask-app
 
 - name: Start and enable Flask service
   systemd:
