@@ -44,11 +44,11 @@
         mode: '0755'
 
   roles:
-    - postgresql-setup
+    - role: postgresql-setup
     
-    - flask-app-deploy
+    - role: flask-app-deploy
       when: app_type == "flask" or app_type == "both"
     
-    - node-app-deploy
+    - role: node-app-deploy
       when: app_type == "node" or app_type == "both"
 ...
