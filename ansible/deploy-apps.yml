@@ -4,34 +4,20 @@
   become: yes
   
   vars:
-    # Versions (passed from Jenkins)
     flask_app_version: "{{ flask_version | default('1.0.0') }}"
     node_app_version: "{{ node_version | default('1.0.0') }}"
-    
-    # Deployment type control
     app_type: "{{ deployment_type | default('both') }}"
-    
-    # Database configuration
     db_host: "localhost"
     db_name: "sharedappdb"
     db_user: "devops"
     db_password: "password"
-    
-    # Application user
     app_user: "devops"
-    
-    # Paths
     apps_base_dir: "/opt/apps"
-    flask_app_dir: "{{ apps_base_dir }}/flask-app"
-    node_app_dir: "{{ apps_base_dir }}/node-app"
 
   pre_tasks:
     - name: Create application user
       user:
         name: "{{ app_user }}"
-        comment: "Application Deployment User"
-        home: "/home/{{ app_user }}"
-        shell: /bin/bash
         state: present
         create_home: yes
 
@@ -41,14 +27,24 @@
         state: directory
         owner: "{{ app_user }}"
         group: "{{ app_user }}"
-        mode: '0755'
+
+    - name: Install Python and virtual environment tools
+      package:
+        name:
+          - python3
+          - python3-pip
+          - python3-virtualenv
+        state: present
+
+    - name: Install Node.js
+      package:
+        name:
+          - nodejs
+          - npm
+        state: present
 
   roles:
-    - role: postgresql-setup
-    
-    - role: flask-app-deploy
-      when: app_type == "flask" or app_type == "both"
-    
-    - role: node-app-deploy
-      when: app_type == "node" or app_type == "both"
+    - postgresql-setup
+    - flask-app-deploy
+    - node-app-deploy
 ...
