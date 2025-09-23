@@ -37,7 +37,12 @@
           - gcc
         state: present
 
-    - name: Install Node.js
+    - name: Add Node.js repository
+      package:
+        name: epel-release
+        state: present
+
+    - name: Install Node.js from EPEL repository
       package:
         name:
           - nodejs
