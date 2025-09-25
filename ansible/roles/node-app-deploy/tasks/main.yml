@@ -37,21 +37,6 @@
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
 
-- name: Install Node.js dependencies (skip if npm not available)
-  command: npm install
-  args:
-    chdir: "{{ node_app_dir }}/versions/node-app-{{ node_app_version }}"
-  ignore_errors: yes
-  when: nodejs_check.rc == 0
-
-- name: Install PM2 globally (skip if npm not available)
-  npm:
-    name: pm2
-    global: yes
-    state: present
-  ignore_errors: yes
-  when: nodejs_check.rc == 0
-
 - name: Start Node.js application directly with node (fallback)
   command: node "{{ node_app_dir }}/versions/node-app-{{ node_app_version }}/index.js"
   args:
