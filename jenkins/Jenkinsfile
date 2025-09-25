@@ -247,60 +247,45 @@ pipeline {
     }
     
     post {
-        always {
-            script {
-                echo "🏁 Pipeline execution completed"
-                
-                // Create report
-                sh """
-                    echo "=== DEPLOYMENT REPORT ===" > report.txt
-                    echo "Timestamp: \$(date)" >> report.txt
-                    echo "Status: ${currentBuild.result ?: 'SUCCESS'}" >> report.txt
-                    echo "Agent: \$(hostname)" >> report.txt
-                    echo "Workspace: \$(pwd)" >> report.txt
-                    echo "Applications: ${params.APP_TYPE}" >> report.txt
-                    echo "Flask Version: ${params.FLASK_VERSION}" >> report.txt
-                    echo "Node Version: ${params.NODE_VERSION}" >> report.txt
-                    echo "" >> report.txt
-                    echo "=== FILES ===" >> report.txt
-                    ls -la >> report.txt
-                """
-                
-                // Archive artifacts if they exist
-                sh '''
-                    if [ -d "artifacts" ] && [ "$(ls -A artifacts)" ]; then
-                        archiveArtifacts artifacts: 'artifacts/*.tar.gz', fingerprint: true
-                    fi
-                    archiveArtifacts artifacts: 'report.txt', fingerprint: true
-                '''
-            }
+    always {
+        echo "🏁 Pipeline execution completed"
+        script {
+            // Create report
+            sh """
+                echo "=== DEPLOYMENT REPORT ===" > report.txt
+                echo "Timestamp: \$(date)" >> report.txt
+                echo "Status: ${currentBuild.result ?: 'SUCCESS'}" >> report.txt
+                echo "Agent: \$(hostname)" >> report.txt
+                echo "Workspace: \$(pwd)" >> report.txt
+                echo "Applications: ${params.APP_TYPE}" >> report.txt
+                echo "Flask Version: ${params.FLASK_VERSION}" >> report.txt
+                echo "Node Version: ${params.NODE_VERSION}" >> report.txt
+            """
+            
+            // Archive artifacts using correct syntax
+            archiveArtifacts artifacts: 'artifacts/*.tar.gz, report.txt', fingerprint: true
         }
-        
-        success {
-            echo "🎉 Deployment completed successfully!"
+    }
+    
+    success {
+        echo "🎉 Deployment completed successfully!"
+    }
+    
+    failure {
+        echo "❌ Deployment failed!"
+        script {
+            sh '''
+                echo "=== TROUBLESHOOTING STEPS ==="
+                echo "1. Check agent connectivity: Is 'Jenkins agent' online?"
+                echo "2. Verify repository structure: Are all required files present?"
+                echo "3. Check Ansible installation on agent"
+                echo "4. Verify SSH connectivity to target server (172.31.31.22)"
+                echo "5. Review Ansible playbook syntax and variables"
+            '''
         }
+    }
         
-        failure {
-            echo "❌ Deployment failed!"
-            script {
-                sh '''
-                    echo "=== TROUBLESHOOTING STEPS ==="
-                    echo "1. Check agent connectivity: Is 'Jenkins agent' online?"
-                    echo "2. Verify repository structure: Are all required files present?"
-                    echo "3. Check Ansible installation on agent"
-                    echo "4. Verify SSH connectivity to target server (172.31.31.22)"
-                    echo "5. Review Ansible playbook syntax and variables"
-                    echo ""
-                    echo "=== WORKSPACE CONTENTS ==="
-                    ls -la
-                    echo ""
-                    echo "=== ANSIBLE DIRECTORY ==="
-                    ls -la ansible/ 2>/dev/null || echo "No ansible directory"
-                '''
-            }
-        }
-        
-        unstable {
+    unstable {
             echo "⚠️ Deployment completed with warnings"
         }
     }
