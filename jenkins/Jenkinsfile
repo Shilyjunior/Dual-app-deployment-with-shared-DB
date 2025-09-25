@@ -12,7 +12,10 @@ pipeline {
     
     environment {
         ANSIBLE_HOST_KEY_CHECKING = 'false'
-        WORKSPACE_DIR = "/home/ubuntu/jenkins-workspace"  // Use accessible directory
+        WORKSPACE_DIR = "/home/ubuntu/jenkins-workspace"
+        AWS_DEFAULT_REGION = 'us-east-1'  // Change if your bucket is in different region
+        S3_BUCKET = 'group7-dual-app-artifacts'
+        BUILD_TIMESTAMP = sh(script: "date +%Y%m%d_%H%M%S", returnStdout: true).trim()
     }
     
     stages {
@@ -29,6 +32,9 @@ pipeline {
                         echo ""
                         echo "=== Python Version ==="
                         python3 --version || echo "Python3 not installed"
+                        echo ""
+                        echo "=== AWS CLI Version ==="
+                        aws --version || echo "AWS CLI not installed"
                         echo ""
                         echo "=== Current Directory ==="
                         pwd
@@ -95,8 +101,27 @@ pipeline {
                     sh '''
                         echo "Installing Ansible and dependencies..."
                         sudo apt update
-                        sudo apt install -y ansible python3-pip sshpass
+                        sudo apt install -y ansible python3-pip sshpass awscli
                         echo "✅ Tools installed"
+                    '''
+                }
+            }
+        }
+        
+        stage('Test AWS S3 Access') {
+            steps {
+                script {
+                    echo "🔐 Testing AWS S3 access..."
+                    sh '''
+                        echo "=== Testing IAM Role Access ==="
+                        aws sts get-caller-identity
+                        
+                        echo "=== Testing S3 Bucket Access ==="
+                        if aws s3 ls s3://group7-dual-app-artifacts/; then
+                            echo "✅ S3 bucket access SUCCESS"
+                        else
+                            echo "⚠️  Bucket might not exist yet, will create during upload"
+                        fi
                     '''
                 }
             }
@@ -149,6 +174,49 @@ pipeline {
                     }
                     
                     sh 'ls -la artifacts/ 2>/dev/null || echo "No artifacts directory"'
+                }
+            }
+        }
+        
+        stage('Upload Artifacts to S3') {
+            steps {
+                script {
+                    echo "📤 Uploading artifacts to S3..."
+                    
+                    def s3BasePath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
+                    
+                    // Ensure bucket exists
+                    sh """
+                        aws s3 mb s3://${env.S3_BUCKET} || echo "Bucket already exists or creation failed"
+                    """
+                    
+                    // Upload Flask artifact if exists
+                    if (fileExists("artifacts/flask-app-${params.FLASK_VERSION}.tar.gz")) {
+                        sh """
+                            echo "Uploading Flask artifact to S3..."
+                            aws s3 cp artifacts/flask-app-${params.FLASK_VERSION}.tar.gz \
+                                s3://${env.S3_BUCKET}/${s3BasePath}/flask-app-${params.FLASK_VERSION}.tar.gz \
+                                --metadata version=${params.FLASK_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                            echo "✅ Flask artifact uploaded to S3"
+                        """
+                    }
+                    
+                    // Upload Node.js artifact if exists
+                    if (fileExists("artifacts/node-app-${params.NODE_VERSION}.tar.gz")) {
+                        sh """
+                            echo "Uploading Node.js artifact to S3..."
+                            aws s3 cp artifacts/node-app-${params.NODE_VERSION}.tar.gz \
+                                s3://${env.S3_BUCKET}/${s3BasePath}/node-app-${params.NODE_VERSION}.tar.gz \
+                                --metadata version=${params.NODE_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                            echo "✅ Node.js artifact uploaded to S3"
+                        """
+                    }
+                    
+                    // List uploaded artifacts
+                    sh """
+                        echo "=== Uploaded Artifacts ==="
+                        aws s3 ls s3://${env.S3_BUCKET}/${s3BasePath}/ --recursive --human-readable || echo "No artifacts uploaded yet"
+                    """
                 }
             }
         }
@@ -247,45 +315,73 @@ pipeline {
     }
     
     post {
-    always {
-        echo "🏁 Pipeline execution completed"
-        script {
-            // Create report
-            sh """
-                echo "=== DEPLOYMENT REPORT ===" > report.txt
-                echo "Timestamp: \$(date)" >> report.txt
-                echo "Status: ${currentBuild.result ?: 'SUCCESS'}" >> report.txt
-                echo "Agent: \$(hostname)" >> report.txt
-                echo "Workspace: \$(pwd)" >> report.txt
-                echo "Applications: ${params.APP_TYPE}" >> report.txt
-                echo "Flask Version: ${params.FLASK_VERSION}" >> report.txt
-                echo "Node Version: ${params.NODE_VERSION}" >> report.txt
-            """
-            
-            // Archive artifacts using correct syntax
-            archiveArtifacts artifacts: 'artifacts/*.tar.gz, report.txt', fingerprint: true
+        always {
+            echo "🏁 Pipeline execution completed"
+            script {
+                def s3BasePath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
+                
+                // Create deployment report
+                sh """
+                    echo "=== DEPLOYMENT REPORT ===" > report.txt
+                    echo "Timestamp: \$(date)" >> report.txt
+                    echo "Status: ${currentBuild.result ?: 'SUCCESS'}" >> report.txt
+                    echo "Agent: \$(hostname)" >> report.txt
+                    echo "Workspace: \$(pwd)" >> report.txt
+                    echo "Applications: ${params.APP_TYPE}" >> report.txt
+                    echo "Flask Version: ${params.FLASK_VERSION}" >> report.txt
+                    echo "Node Version: ${params.NODE_VERSION}" >> report.txt
+                    echo "Build Number: ${env.BUILD_NUMBER}" >> report.txt
+                    echo "S3 Location: s3://${env.S3_BUCKET}/${s3BasePath}/" >> report.txt
+                    echo "Build Timestamp: ${env.BUILD_TIMESTAMP}" >> report.txt
+                """
+                
+                // Upload report to S3
+                sh """
+                    aws s3 cp report.txt \
+                        s3://${env.S3_BUCKET}/${s3BasePath}/deployment-report.txt \
+                        --metadata build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                """
+                
+                // Archive artifacts locally (optional)
+                archiveArtifacts artifacts: 'artifacts/*.tar.gz, report.txt', fingerprint: true
+                
+                // Display S3 location
+                echo "Artifacts stored in S3: s3://${env.S3_BUCKET}/${s3BasePath}/"
+            }
         }
-    }
-    
-    success {
-        echo "🎉 Deployment completed successfully!"
-    }
-    
-    failure {
-        echo "❌ Deployment failed!"
-        script {
-            sh '''
-                echo "=== TROUBLESHOOTING STEPS ==="
-                echo "1. Check agent connectivity: Is 'Jenkins agent' online?"
-                echo "2. Verify repository structure: Are all required files present?"
-                echo "3. Check Ansible installation on agent"
-                echo "4. Verify SSH connectivity to target server (172.31.31.22)"
-                echo "5. Review Ansible playbook syntax and variables"
-            '''
-        }
-    }
         
-    unstable {
+        success {
+            echo "🎉 Deployment completed successfully!"
+            script {
+                def s3Path = "s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/"
+                echo "✅ Artifacts successfully uploaded to: ${s3Path}"
+                
+                // Generate presigned URL for easy access (valid for 7 days)
+                sh """
+                    aws s3 presign s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/deployment-report.txt \
+                        --expires-in 604800 > presigned-url.txt
+                """
+                def presignedUrl = readFile('presigned-url.txt').trim()
+                echo "📎 Presigned report URL: ${presignedUrl}"
+            }
+        }
+        
+        failure {
+            echo "❌ Deployment failed!"
+            script {
+                sh '''
+                    echo "=== TROUBLESHOOTING STEPS ==="
+                    echo "1. Check agent connectivity: Is 'Jenkins agent' online?"
+                    echo "2. Verify repository structure: Are all required files present?"
+                    echo "3. Check Ansible installation on agent"
+                    echo "4. Verify SSH connectivity to target server (172.31.31.22)"
+                    echo "5. Review Ansible playbook syntax and variables"
+                    echo "6. Check AWS IAM role permissions for S3 access"
+                '''
+            }
+        }
+        
+        unstable {
             echo "⚠️ Deployment completed with warnings"
         }
     }
