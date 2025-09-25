@@ -5,4 +5,4 @@ Group 7 Project
 This project was completed by:
 Saudat Bada-Akande
 Sulaiman 
-Akeem A
+Akeem Adeshile

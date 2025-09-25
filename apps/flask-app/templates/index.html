@@ -1,12 +1,70 @@
 <!DOCTYPE html>
 <html>
-<head><title>Flask Shared DB</title></head>
+<head>
+    <title>Flask Shared DB</title>
+    <style>
+        .team-header {
+            background-color: #f0f8ff;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-left: 4px solid #007acc;
+            border-radius: 5px;
+        }
+        .team-members {
+            background-color: #f9f9f9;
+            padding: 20px;
+            margin-top: 20px;
+            border-top: 2px solid #ddd;
+            border-radius: 5px;
+        }
+        .excellence-img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            margin: 20px 0;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+    </style>
+</head>
 <body>
-<h1>Flask app with shared DB is live!</h1>
-<ul>
-{% for item in data %}
-  <li>{{ item }}</li>
-{% endfor %}
-</ul>
+    <div class="container">
+        <h1>Flask app with shared DB is live!</h1>
+        
+        <!-- Team 7 header -->
+        <div class="team-header">
+            <strong>This project was executed by Team 7</strong>
+        </div>
+
+        <!-- Excellence Image -->
+        <div style="text-align: center;">
+            <img src="https://images.unsplash.com/photo-1551288049-bebda4e38f71?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80" 
+                 alt="Excellence in Technology" 
+                 class="excellence-img"
+                 style="max-width: 400px;">
+            <p><em>Striving for excellence in every deployment</em></p>
+        </div>
+
+        <h2>Database Content:</h2>
+        <ul>
+        {% for item in data %}
+            <li>{{ item }}</li>
+        {% endfor %}
+        </ul>
+
+        <!-- Team 7 members -->
+        <div class="team-members">
+            <h3>Members of Team 7:</h3>
+            <ul style="list-style-type: none; padding-left: 0;">
+                <li>• Saudat Bada-Akande</li>
+                <li>• Sulaiman Big</li>
+                <li>• Akeem Adeshile</li>
+            </ul>
+        </div>
+    </div>
 </body>
 </html>
