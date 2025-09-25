@@ -1,53 +1,90 @@
 ---
-- name: Install PostgreSQL
-  yum:
-    name:
-      - postgresql-server
-      - postgresql-contrib
-      - python-psycopg2
-    state: present
+- name: Install and configure PostgreSQL
+  block:
+    - name: Install PostgreSQL
+      yum:
+        name:
+          - postgresql-server
+          - postgresql-contrib
+          - python3-psycopg2
+        state: present
 
-- name: Initialize PostgreSQL database
-  command: postgresql-setup initdb
-  args:
-    creates: /var/lib/pgsql/data/postgresql.conf
+    - name: Initialize PostgreSQL database
+      command: postgresql-setup initdb
+      args:
+        creates: /var/lib/pgsql/data/postgresql.conf
 
-- name: Start and enable PostgreSQL service
-  systemd:
-    name: postgresql
-    state: started
-    enabled: yes
+    - name: Configure PostgreSQL authentication
+      lineinfile:
+        path: /var/lib/pgsql/data/pg_hba.conf
+        regexp: '^host\\s+all\\s+all\\s+127.0.0.1/32\\s+ident'
+        line: 'host all all 127.0.0.1/32 md5'
+        backup: yes
 
-- name: Create application database
-  postgresql_db:
-    name: "{{ db_name }}"
-    state: present
+    - name: Start and enable PostgreSQL service
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
 
-- name: Create database user
-  postgresql_user:
-    name: "{{ db_user }}"
-    password: "{{ db_password }}"
-    state: present
+    - name: Wait for PostgreSQL to be ready
+      wait_for:
+        port: 5432
+        delay: 5
+        timeout: 30
 
-- name: Grant privileges to user
-  postgresql_privs:
-    database: "{{ db_name }}"
-    role: "{{ db_user }}"
-    privs: ALL
-    type: database
-    state: present
+  rescue:
+    - name: Display PostgreSQL setup error
+      debug:
+        msg: "PostgreSQL setup failed. Continuing with existing setup."
 
-- name: Copy database initialization script
-  copy:
-    src: files/init.sql
-    dest: /tmp/init.sql
-    owner: postgres
-    group: postgres
-    mode: 0644
-
-- name: Initialize database schema
+- name: Setup database and schema
+  become: yes
   become_user: postgres
-  postgresql_query:
-    db: "{{ db_name }}"
-    path_to_script: /tmp/init.sql
+  block:
+    - name: Create database if not exists
+      shell: |
+        psql -c "CREATE DATABASE {{ db_name }};" || true
+
+    - name: Create user if not exists
+      shell: |
+        psql -c "CREATE USER {{ db_user }} WITH PASSWORD '{{ db_password }}';" || true
+
+    - name: Grant privileges
+      shell: |
+        psql -c "GRANT ALL PRIVILEGES ON DATABASE {{ db_name }} TO {{ db_user }};"
+
+    - name: Initialize schema
+      shell: |
+        psql -d {{ db_name }} -f /tmp/init.sql
+      args:
+        executable: /bin/bash
+
+    - name: Verify setup
+      shell: |
+        psql -d {{ db_name }} -c "SELECT COUNT(*) FROM devs;"
+      register: db_verify
+      changed_when: false
+
+    - name: Display verification result
+      debug:
+        msg: "Database contains {{ db_verify.stdout_lines[-1] | trim }} records"
+
+- name: Create application user
+  user:
+    name: "{{ app_user }}"
+    comment: "Application Deployment User"
+    home: "/home/{{ app_user }}"
+    shell: /bin/bash
+    state: present
+    create_home: yes
+    system: no
+
+- name: Create application directories with proper ownership
+  file:
+    path: "{{ apps_base_dir }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_user }}"
+    mode: '0755'
 ...

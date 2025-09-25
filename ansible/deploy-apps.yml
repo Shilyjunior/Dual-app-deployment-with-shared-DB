@@ -1,0 +1,35 @@
+---
+- name: Deploy Flask and Node.js apps with shared DB
+  hosts: g1
+  become: yes
+  
+  vars:
+    flask_app_version: "{{ flask_version | default('1.0.0') }}"
+    node_app_version: "{{ node_version | default('1.0.0') }}"
+    app_type: "{{ deployment_type | default('both') }}"
+    db_host: "localhost"
+    db_name: "sharedappdb"
+    db_user: "devops"
+    db_password: "password"
+    app_user: "devops"
+    apps_base_dir: "/opt/apps"
+
+  pre_tasks:
+    - name: Create application user
+      user:
+        name: "{{ app_user }}"
+        state: present
+        create_home: yes
+
+    - name: Create base application directory
+      file:
+        path: "{{ apps_base_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+
+  roles:
+    - postgresql-setup
+    - flask-app-deploy
+    - node-app-deploy
+...
