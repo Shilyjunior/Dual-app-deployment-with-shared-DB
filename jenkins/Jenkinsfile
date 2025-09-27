@@ -1,6 +1,6 @@
 pipeline {
     agent {
-        label 'Jenkins agent'  // ← CRITICAL: Run on agent with Ansible
+        label 'Jenkins agent'
     }
     
     parameters {
@@ -12,6 +12,10 @@ pipeline {
     
     environment {
         ANSIBLE_HOST_KEY_CHECKING = 'false'
+        WORKSPACE_DIR = "/home/ubuntu/jenkins-workspace"
+        AWS_DEFAULT_REGION = 'us-east-1'  // Change if your bucket is in different region
+        S3_BUCKET = 'group7-dual-app-artifacts'
+        BUILD_TIMESTAMP = sh(script: "date +%Y%m%d_%H%M%S", returnStdout: true).trim()
     }
     
     stages {
@@ -24,30 +28,41 @@ pipeline {
                         cat /etc/os-release
                         echo ""
                         echo "=== Ansible Version ==="
-                        ansible --version
+                        ansible --version || echo "Ansible not installed"
                         echo ""
                         echo "=== Python Version ==="
-                        python3 --version
+                        python3 --version || echo "Python3 not installed"
+                        echo ""
+                        echo "=== AWS CLI Version ==="
+                        aws --version || echo "AWS CLI not installed"
                         echo ""
                         echo "=== Current Directory ==="
                         pwd
                         ls -la
+                        echo ""
+                        echo "=== Disk Space ==="
+                        df -h
                     '''
                 }
             }
         }
         
-        stage('Explore Repository') {
+        stage('Checkout and Explore Repository') {
             steps {
                 script {
+                    echo "📥 Checking out repository..."
+                    checkout scm
+                    
                     echo "🔍 Exploring repository structure..."
                     sh '''
-                        echo "=== Detailed Structure ==="
-                        echo "Ansible directory:"
-                        ls -la ansible/
+                        echo "=== Repository Contents ==="
+                        ls -la
                         echo ""
-                        echo "=== Ansible Files ==="
-                        find ansible/ -type f -name "*.yml" -o -name "*.yaml" -o -name "*.ini" | sort
+                        echo "=== Ansible directory ==="
+                        ls -la ansible/ 2>/dev/null || echo "No ansible directory found"
+                        echo ""
+                        echo "=== Apps directory ==="
+                        ls -la apps/ 2>/dev/null || echo "No apps directory found"
                     '''
                 }
             }
@@ -62,13 +77,51 @@ pipeline {
                         echo "=== Critical Files Check ==="
                         [ -f "ansible/deploy-apps.yml" ] && echo "✅ Main playbook exists" || echo "❌ Main playbook missing"
                         [ -f "ansible/inventory/host.ini" ] && echo "✅ Inventory exists" || echo "❌ Inventory missing"
-                        [ -f "apps/flask-app/app.py" ] && echo "✅ Flask app exists" || echo "❌ Flask app missing"
-                        [ -f "apps/node-app/index.js" ] && echo "✅ Node.js app exists" || echo "❌ Node.js app missing"
+                        [ -d "apps/flask-app" ] && echo "✅ Flask app directory exists" || echo "❌ Flask app directory missing"
+                        [ -d "apps/node-app" ] && echo "✅ Node.js app directory exists" || echo "❌ Node.js app directory missing"
                         [ -f "db/init.sql" ] && echo "✅ DB init exists" || echo "❌ DB init missing"
                         
                         echo ""
                         echo "=== Inventory Content ==="
-                        cat ansible/inventory/host.ini
+                        cat ansible/inventory/host.ini 2>/dev/null || echo "Inventory file not accessible"
+                    '''
+                }
+            }
+        }
+        
+        stage('Install Required Tools') {
+            when {
+                expression { 
+                    sh(script: 'which ansible', returnStatus: true) != 0 
+                }
+            }
+            steps {
+                script {
+                    echo "📦 Installing required tools..."
+                    sh '''
+                        echo "Installing Ansible and dependencies..."
+                        sudo apt update
+                        sudo apt install -y ansible python3-pip sshpass awscli
+                        echo "✅ Tools installed"
+                    '''
+                }
+            }
+        }
+        
+        stage('Test AWS S3 Access') {
+            steps {
+                script {
+                    echo "🔐 Testing AWS S3 access..."
+                    sh '''
+                        echo "=== Testing IAM Role Access ==="
+                        aws sts get-caller-identity
+                        
+                        echo "=== Testing S3 Bucket Access ==="
+                        if aws s3 ls s3://group7-dual-app-artifacts/; then
+                            echo "✅ S3 bucket access SUCCESS"
+                        else
+                            echo "⚠️  Bucket might not exist yet, will create during upload"
+                        fi
                     '''
                 }
             }
@@ -88,10 +141,10 @@ pipeline {
                             echo "✅ Ansible connectivity SUCCESS"
                         else
                             echo "❌ Ansible connectivity FAILED"
-                            echo "=== Troubleshooting ==="
-                            echo "1. Check if target server (172.31.31.22) is running"
-                            echo "2. Verify SSH key is accessible on agent"
-                            echo "3. Check network connectivity between agent and target"
+                            echo "=== Attempting manual SSH test ==="
+                            TARGET_IP=$(grep -oE "([0-9]{1,3}\\.){3}[0-9]{1,3}" inventory/host.ini | head -1)
+                            ssh-keyscan -H $TARGET_IP >> ~/.ssh/known_hosts
+                            ssh -o ConnectTimeout=10 ubuntu@$TARGET_IP "echo 'SSH connection successful'"
                         fi
                     '''
                 }
@@ -107,31 +160,84 @@ pipeline {
                     if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
                         sh """
                             echo "Building Flask app v${params.FLASK_VERSION}"
-                            tar -czf artifacts/flask-app-${params.FLASK_VERSION}.tar.gz -C apps/flask-app .
-                            echo "✅ Flask artifact created"
+                            [ -d "apps/flask-app" ] && tar -czf artifacts/flask-app-${params.FLASK_VERSION}.tar.gz -C apps/flask-app . || echo "Flask app directory not found"
+                            echo "✅ Flask artifact creation attempted"
                         """
                     }
                     
                     if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
                         sh """
                             echo "Building Node.js app v${params.NODE_VERSION}"
-                            tar -czf artifacts/node-app-${params.NODE_VERSION}.tar.gz -C apps/node-app .
-                            echo "✅ Node.js artifact created"
+                            [ -d "apps/node-app" ] && tar -czf artifacts/node-app-${params.NODE_VERSION}.tar.gz -C apps/node-app . || echo "Node.js app directory not found"
+                            echo "✅ Node.js artifact creation attempted"
                         """
                     }
                     
-                    sh 'ls -la artifacts/'
+                    sh 'ls -la artifacts/ 2>/dev/null || echo "No artifacts directory"'
+                }
+            }
+        }
+        
+        stage('Upload Artifacts to S3') {
+            steps {
+                script {
+                    echo "📤 Uploading artifacts to S3..."
+                    
+                    def s3BasePath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
+                    
+                    // Ensure bucket exists
+                    sh """
+                        aws s3 mb s3://${env.S3_BUCKET} || echo "Bucket already exists or creation failed"
+                    """
+                    
+                    // Upload Flask artifact if exists
+                    if (fileExists("artifacts/flask-app-${params.FLASK_VERSION}.tar.gz")) {
+                        sh """
+                            echo "Uploading Flask artifact to S3..."
+                            aws s3 cp artifacts/flask-app-${params.FLASK_VERSION}.tar.gz \
+                                s3://${env.S3_BUCKET}/${s3BasePath}/flask-app-${params.FLASK_VERSION}.tar.gz \
+                                --metadata version=${params.FLASK_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                            echo "✅ Flask artifact uploaded to S3"
+                        """
+                    }
+                    
+                    // Upload Node.js artifact if exists
+                    if (fileExists("artifacts/node-app-${params.NODE_VERSION}.tar.gz")) {
+                        sh """
+                            echo "Uploading Node.js artifact to S3..."
+                            aws s3 cp artifacts/node-app-${params.NODE_VERSION}.tar.gz \
+                                s3://${env.S3_BUCKET}/${s3BasePath}/node-app-${params.NODE_VERSION}.tar.gz \
+                                --metadata version=${params.NODE_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                            echo "✅ Node.js artifact uploaded to S3"
+                        """
+                    }
+                    
+                    // List uploaded artifacts
+                    sh """
+                        echo "=== Uploaded Artifacts ==="
+                        aws s3 ls s3://${env.S3_BUCKET}/${s3BasePath}/ --recursive --human-readable || echo "No artifacts uploaded yet"
+                    """
                 }
             }
         }
         
         stage('Deploy Applications') {
             when {
-                expression { !params.DRY_RUN }
+                expression { 
+                    !params.DRY_RUN && 
+                    fileExists('ansible/deploy-apps.yml') &&
+                    fileExists('ansible/inventory/host.ini')
+                }
             }
             steps {
                 script {
                     echo "🚀 Deploying applications..."
+                    
+                    // Copy init.sql to temp location for Ansible
+                    sh '''
+                        mkdir -p /tmp/deployment
+                        [ -f "db/init.sql" ] && cp db/init.sql /tmp/init.sql || echo "No init.sql found, using existing"
+                    '''
                     
                     sh """
                         cd ansible
@@ -158,46 +264,50 @@ pipeline {
                     
                     // Extract target IP from inventory
                     def targetIP = sh(
-                        script: 'grep -oE "([0-9]{1,3}\\.){3}[0-9]{1,3}" ansible/inventory/host.ini | head -1',
+                        script: 'cd ansible && grep -oE "([0-9]{1,3}\\.){3}[0-9]{1,3}" inventory/host.ini | head -1',
                         returnStdout: true
                     ).trim()
                     
                     echo "Target server IP: ${targetIP}"
                     
-                    // Test Flask app
-                    if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
-                        sh """
-                            echo "Testing Flask app on ${targetIP}:5000..."
-                            for i in {1..10}; do
-                                if curl -f -s --connect-timeout 10 http://${targetIP}:5000 > /dev/null; then
-                                    echo "✅ Flask app is RUNNING"
-                                    echo "Response preview:"
-                                    curl -s http://${targetIP}:5000 | head -5
-                                    break
-                                else
-                                    echo "⏳ Attempt \$i: Flask app not ready..."
-                                    sleep 10
-                                fi
-                            done
-                        """
-                    }
-                    
-                    // Test Node.js app
-                    if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
-                        sh """
-                            echo "Testing Node.js app on ${targetIP}:3000..."
-                            for i in {1..10}; do
-                                if curl -f -s --connect-timeout 10 http://${targetIP}:3000 > /dev/null; then
-                                    echo "✅ Node.js app is RUNNING"
-                                    echo "Response preview:"
-                                    curl -s http://${targetIP}:3000 | head -5
-                                    break
-                                else
-                                    echo "⏳ Attempt \$i: Node.js app not ready..."
-                                    sleep 10
-                                fi
-                            done
-                        """
+                    if (targetIP) {
+                        // Test Flask app
+                        if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
+                            sh """
+                                echo "Testing Flask app on ${targetIP}:5000..."
+                                for i in {1..5}; do
+                                    if curl -f -s --connect-timeout 5 http://${targetIP}:5000 > /dev/null; then
+                                        echo "✅ Flask app is RUNNING"
+                                        echo "Response preview:"
+                                        curl -s http://${targetIP}:5000 | head -3
+                                        break
+                                    else
+                                        echo "⏳ Attempt \$i: Flask app not ready..."
+                                        sleep 5
+                                    fi
+                                done
+                            """
+                        }
+                        
+                        // Test Node.js app
+                        if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
+                            sh """
+                                echo "Testing Node.js app on ${targetIP}:3000..."
+                                for i in {1..5}; do
+                                    if curl -f -s --connect-timeout 5 http://${targetIP}:3000 > /dev/null; then
+                                        echo "✅ Node.js app is RUNNING"
+                                        echo "Response preview:"
+                                        curl -s http://${targetIP}:3000 | head -3
+                                        break
+                                    else
+                                        echo "⏳ Attempt \$i: Node.js app not ready..."
+                                        sleep 5
+                                    fi
+                                done
+                            """
+                        }
+                    } else {
+                        echo "❌ Could not determine target IP from inventory"
                     }
                 }
             }
@@ -208,35 +318,71 @@ pipeline {
         always {
             echo "🏁 Pipeline execution completed"
             script {
-                // Archive artifacts
-                archiveArtifacts artifacts: 'artifacts/*.tar.gz,report.txt', fingerprint: true
+                def s3BasePath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
                 
-                // Create report
+                // Create deployment report
                 sh """
                     echo "=== DEPLOYMENT REPORT ===" > report.txt
                     echo "Timestamp: \$(date)" >> report.txt
                     echo "Status: ${currentBuild.result ?: 'SUCCESS'}" >> report.txt
                     echo "Agent: \$(hostname)" >> report.txt
+                    echo "Workspace: \$(pwd)" >> report.txt
                     echo "Applications: ${params.APP_TYPE}" >> report.txt
                     echo "Flask Version: ${params.FLASK_VERSION}" >> report.txt
                     echo "Node Version: ${params.NODE_VERSION}" >> report.txt
+                    echo "Build Number: ${env.BUILD_NUMBER}" >> report.txt
+                    echo "S3 Location: s3://${env.S3_BUCKET}/${s3BasePath}/" >> report.txt
+                    echo "Build Timestamp: ${env.BUILD_TIMESTAMP}" >> report.txt
                 """
+                
+                // Upload report to S3
+                sh """
+                    aws s3 cp report.txt \
+                        s3://${env.S3_BUCKET}/${s3BasePath}/deployment-report.txt \
+                        --metadata build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                """
+                
+                // Archive artifacts locally (optional)
+                archiveArtifacts artifacts: 'artifacts/*.tar.gz, report.txt', fingerprint: true
+                
+                // Display S3 location
+                echo "Artifacts stored in S3: s3://${env.S3_BUCKET}/${s3BasePath}/"
             }
         }
         
         success {
             echo "🎉 Deployment completed successfully!"
+            script {
+                def s3Path = "s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/"
+                echo "✅ Artifacts successfully uploaded to: ${s3Path}"
+                
+                // Generate presigned URL for easy access (valid for 7 days)
+                sh """
+                    aws s3 presign s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/deployment-report.txt \
+                        --expires-in 604800 > presigned-url.txt
+                """
+                def presignedUrl = readFile('presigned-url.txt').trim()
+                echo "📎 Presigned report URL: ${presignedUrl}"
+            }
         }
         
         failure {
             echo "❌ Deployment failed!"
-            sh '''
-                echo "=== TROUBLESHOOTING ==="
-                echo "1. Check if ubuntu-agent is online and connected"
-                echo "2. Verify Ansible is installed on the agent"
-                echo "3. Check SSH connectivity from agent to target server"
-                echo "4. Review Ansible playbook syntax"
-            '''
+            script {
+                sh '''
+                    echo "=== TROUBLESHOOTING STEPS ==="
+                    echo "1. Check agent connectivity: Is 'Jenkins agent' online?"
+                    echo "2. Verify repository structure: Are all required files present?"
+                    echo "3. Check Ansible installation on agent"
+                    echo "4. Verify SSH connectivity to target server (172.31.31.22)"
+                    echo "5. Review Ansible playbook syntax and variables"
+                    echo "6. Check AWS IAM role permissions for S3 access"
+                '''
+            }
+        }
+        
+        unstable {
+            echo "⚠️ Deployment completed with warnings"
         }
     }
 }

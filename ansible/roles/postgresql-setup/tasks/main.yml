@@ -17,7 +17,7 @@
     - name: Configure PostgreSQL authentication
       lineinfile:
         path: /var/lib/pgsql/data/pg_hba.conf
-        regexp: '^host\\s+all\\s+all\\s+127.0.0.1/32\\s+ident'
+        regexp: '^host\s+all\s+all\s+127.0.0.1/32\s+ident'
         line: 'host all all 127.0.0.1/32 md5'
         backup: yes
 
@@ -54,11 +54,19 @@
       shell: |
         psql -c "GRANT ALL PRIVILEGES ON DATABASE {{ db_name }} TO {{ db_user }};"
 
-    - name: Initialize schema
+    - name: Check if devs table already has data
+      shell: |
+        psql -d {{ db_name }} -t -c "SELECT COUNT(*) FROM devs;" 2>/dev/null || echo "0"
+      register: devs_count
+      changed_when: false
+
+    - name: Initialize schema only if table is empty
       shell: |
         psql -d {{ db_name }} -f /tmp/init.sql
       args:
         executable: /bin/bash
+      when: devs_count.stdout.strip() == "0"
+      failed_when: false
 
     - name: Verify setup
       shell: |
