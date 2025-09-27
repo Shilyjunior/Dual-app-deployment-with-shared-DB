@@ -80,90 +80,49 @@ pipeline {
                     echo "🏷️ Managing application versions..."
                     
                     // Ensure bucket exists for version management
-                    sh """
-                        aws s3 mb s3://${env.S3_BUCKET} || echo "Bucket already exists or creation failed"
-                    """
+                    sh "aws s3 mb s3://${env.S3_BUCKET} || echo 'Bucket already exists or creation failed'"
                     
-                    // Download existing version file or create new one and calculate versions
-                    sh """
-                        echo "Checking for existing version file..."
-                        if aws s3 cp s3://${env.S3_BUCKET}/versions/${env.VERSION_FILE} . 2>/dev/null; then
-                            echo "✅ Found existing version file"
-                            cat ${env.VERSION_FILE}
-                        else
-                            echo "📝 Creating initial version file"
-                            cat > ${env.VERSION_FILE} << 'VERSIONEOF'
-{
+                    // Download existing version file or create new one
+                    def versionExists = sh(
+                        script: "aws s3 cp s3://${env.S3_BUCKET}/versions/${env.VERSION_FILE} . 2>/dev/null",
+                        returnStatus: true
+                    )
+                    
+                    if (versionExists != 0) {
+                        echo "📝 Creating initial version file"
+                        writeFile file: env.VERSION_FILE, text: '''{
   "flask": {
     "current": "1.0.0",
     "history": ["1.0.0"]
   },
   "node": {
-    "current": "1.0.0", 
+    "current": "1.0.0",
     "history": ["1.0.0"]
   }
-}
-VERSIONEOF
-                        fi
-                        
-                        echo "=== Calculating new versions ==="
-                        
-                        # Extract current Flask version
-                        CURRENT_FLASK_VERSION=\$(jq -r '.flask.current' ${env.VERSION_FILE})
-                        echo "Current Flask version: \$CURRENT_FLASK_VERSION"
-                        
-                        # Extract current Node version  
-                        CURRENT_NODE_VERSION=\$(jq -r '.node.current' ${env.VERSION_FILE})
-                        echo "Current Node version: \$CURRENT_NODE_VERSION"
-                        
-                        # Function to increment version
-                        increment_version() {
-                            local current_version=\$1
-                            local increment_type=\$2
-                            
-                            # Split version into parts
-                            IFS='.' read -r major minor patch <<< "\$current_version"
-                            
-                            case \$increment_type in
-                                "major")
-                                    major=\$((major + 1))
-                                    minor=0
-                                    patch=0
-                                    ;;
-                                "minor")
-                                    minor=\$((minor + 1))
-                                    patch=0
-                                    ;;
-                                "patch"|*)
-                                    patch=\$((patch + 1))
-                                    ;;
-                            esac
-                            
-                            echo "\${major}.\${minor}.\${patch}"
-                        }
-                        
-                        # Calculate new versions
-                        NEW_FLASK_VERSION=\$(increment_version \$CURRENT_FLASK_VERSION ${params.VERSION_INCREMENT})
-                        NEW_NODE_VERSION=\$(increment_version \$CURRENT_NODE_VERSION ${params.VERSION_INCREMENT})
-                        
-                        echo "New Flask version: \$NEW_FLASK_VERSION"
-                        echo "New Node version: \$NEW_NODE_VERSION"
-                        
-                        # Export versions for later stages
-                        echo "FLASK_VERSION=\$NEW_FLASK_VERSION" > versions.env
-                        echo "NODE_VERSION=\$NEW_NODE_VERSION" >> versions.env
-                        
-                        cat versions.env
-                    """
-                    
-                    // Load calculated versions into environment
-                    def versionProps = readFile('versions.env')
-                    versionProps.split('\n').each { line ->
-                        if (line.contains('=')) {
-                            def (key, value) = line.split('=', 2)
-                            env[key] = value
-                        }
+}'''
+                    } else {
+                        echo "✅ Found existing version file"
                     }
+                    
+                    sh "cat ${env.VERSION_FILE}"
+                    
+                    // Extract current versions and calculate new ones
+                    def currentFlaskVersion = sh(
+                        script: "jq -r '.flask.current' ${env.VERSION_FILE}",
+                        returnStdout: true
+                    ).trim()
+                    
+                    def currentNodeVersion = sh(
+                        script: "jq -r '.node.current' ${env.VERSION_FILE}",
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "Current Flask version: ${currentFlaskVersion}"
+                    echo "Current Node version: ${currentNodeVersion}"
+                    
+                    // Calculate new versions
+                    env.FLASK_VERSION = calculateNewVersion(currentFlaskVersion)
+                    env.NODE_VERSION = calculateNewVersion(currentNodeVersion)
                     
                     echo "📋 Version Information:"
                     echo "Flask Version: ${env.FLASK_VERSION}"
@@ -595,6 +554,32 @@ def calculateNewVersion(appType) {
     
     def currentVersion = versionData[appType].current
     
+    def versionParts = currentVersion.split('\\.')
+    def major = Integer.parseInt(versionParts[0])
+    def minor = Integer.parseInt(versionParts[1])
+    def patch = Integer.parseInt(versionParts[2])
+    
+    switch(params.VERSION_INCREMENT) {
+        case 'major':
+            major++
+            minor = 0
+            patch = 0
+            break
+        case 'minor':
+            minor++
+            patch = 0
+            break
+        case 'patch':
+        default:
+            patch++
+            break
+    }
+    
+    return "${major}.${minor}.${patch}"
+}
+
+// Helper function to calculate new version
+def calculateNewVersion(currentVersion) {
     def versionParts = currentVersion.split('\\.')
     def major = Integer.parseInt(versionParts[0])
     def minor = Integer.parseInt(versionParts[1])
