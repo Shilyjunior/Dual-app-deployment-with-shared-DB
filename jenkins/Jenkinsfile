@@ -5,17 +5,19 @@ pipeline {
     
     parameters {
         choice(name: 'APP_TYPE', choices: ['both', 'flask', 'node'], description: 'Select application to deploy')
-        string(name: 'FLASK_VERSION', defaultValue: '1.0.0', description: 'Flask app version')
-        string(name: 'NODE_VERSION', defaultValue: '1.0.0', description: 'Node.js app version')
+        choice(name: 'VERSION_INCREMENT', choices: ['patch', 'minor', 'major'], description: 'Version increment type')
         booleanParam(name: 'DRY_RUN', defaultValue: false, description: 'Check mode (dry run) without making changes')
+        booleanParam(name: 'SKIP_CLEANUP', defaultValue: false, description: 'Skip artifact cleanup (for debugging)')
     }
     
     environment {
         ANSIBLE_HOST_KEY_CHECKING = 'false'
         WORKSPACE_DIR = "/home/ubuntu/jenkins-workspace"
-        AWS_DEFAULT_REGION = 'us-east-1'  // Change if your bucket is in different region
+        AWS_DEFAULT_REGION = 'us-east-1'
         S3_BUCKET = 'group7-dual-app-artifacts'
         BUILD_TIMESTAMP = sh(script: "date +%Y%m%d_%H%M%S", returnStdout: true).trim()
+        ARTIFACT_RETENTION_DAYS = '3'
+        VERSION_FILE = 'version.json'
     }
     
     stages {
@@ -35,6 +37,10 @@ pipeline {
                         echo ""
                         echo "=== AWS CLI Version ==="
                         aws --version || echo "AWS CLI not installed"
+                        echo ""
+                        echo "=== jq Version (for JSON processing) ==="
+                        jq --version || echo "jq not installed - installing..."
+                        sudo apt-get update && sudo apt-get install -y jq || echo "Failed to install jq"
                         echo ""
                         echo "=== Current Directory ==="
                         pwd
@@ -64,6 +70,54 @@ pipeline {
                         echo "=== Apps directory ==="
                         ls -la apps/ 2>/dev/null || echo "No apps directory found"
                     '''
+                }
+            }
+        }
+        
+        stage('Version Management') {
+            steps {
+                script {
+                    echo "🏷️ Managing application versions..."
+                    
+                    // Ensure bucket exists for version management
+                    sh """
+                        aws s3 mb s3://${env.S3_BUCKET} || echo "Bucket already exists or creation failed"
+                    """
+                    
+                    // Download existing version file or create new one
+                    sh '''
+                        echo "Checking for existing version file..."
+                        if aws s3 cp s3://${S3_BUCKET}/versions/${VERSION_FILE} . 2>/dev/null; then
+                            echo "✅ Found existing version file"
+                            cat ${VERSION_FILE}
+                        else
+                            echo "📝 Creating initial version file"
+                            cat > ${VERSION_FILE} << 'EOF'
+{
+  "flask": {
+    "current": "1.0.0",
+    "history": ["1.0.0"]
+  },
+  "node": {
+    "current": "1.0.0", 
+    "history": ["1.0.0"]
+  }
+}
+EOF
+                        fi
+                    '''
+                    
+                    // Calculate new versions
+                    def flaskVersion = calculateNewVersion('flask')
+                    def nodeVersion = calculateNewVersion('node')
+                    
+                    env.FLASK_VERSION = flaskVersion
+                    env.NODE_VERSION = nodeVersion
+                    
+                    echo "📋 Version Information:"
+                    echo "Flask Version: ${env.FLASK_VERSION}"
+                    echo "Node Version: ${env.NODE_VERSION}"
+                    echo "Version Increment Type: ${params.VERSION_INCREMENT}"
                 }
             }
         }
@@ -132,71 +186,164 @@ pipeline {
             }
         }
         
-        stage('Build Artifacts') {
+        stage('Build Versioned Artifacts') {
             steps {
                 script {
-                    echo "🏗️ Building deployment artifacts..."
+                    echo "🏗️ Building versioned deployment artifacts..."
                     sh 'mkdir -p artifacts'
                     
                     if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
                         sh """
-                            echo "Building Flask app v${params.FLASK_VERSION}"
-                            [ -d "apps/flask-app" ] && tar -czf artifacts/flask-app-${params.FLASK_VERSION}.tar.gz -C apps/flask-app . || echo "Flask app directory not found"
-                            echo "✅ Flask artifact creation attempted"
+                            echo "Building Flask app v${env.FLASK_VERSION}"
+                            if [ -d "apps/flask-app" ]; then
+                                # Add version info to artifact
+                                echo '{"version":"${env.FLASK_VERSION}","build":"${env.BUILD_NUMBER}","timestamp":"${env.BUILD_TIMESTAMP}"}' > apps/flask-app/version.json
+                                
+                                # Create versioned artifact
+                                tar -czf artifacts/flask-app-${env.FLASK_VERSION}.tar.gz -C apps/flask-app .
+                                echo "✅ Flask artifact v${env.FLASK_VERSION} created successfully"
+                                
+                                # Verify artifact
+                                ls -lh artifacts/flask-app-${env.FLASK_VERSION}.tar.gz
+                            else
+                                echo "❌ Flask app directory not found"
+                                exit 1
+                            fi
                         """
                     }
                     
                     if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
                         sh """
-                            echo "Building Node.js app v${params.NODE_VERSION}"
-                            [ -d "apps/node-app" ] && tar -czf artifacts/node-app-${params.NODE_VERSION}.tar.gz -C apps/node-app . || echo "Node.js app directory not found"
-                            echo "✅ Node.js artifact creation attempted"
+                            echo "Building Node.js app v${env.NODE_VERSION}"
+                            if [ -d "apps/node-app" ]; then
+                                # Add version info to artifact
+                                echo '{"version":"${env.NODE_VERSION}","build":"${env.BUILD_NUMBER}","timestamp":"${env.BUILD_TIMESTAMP}"}' > apps/node-app/version.json
+                                
+                                # Create versioned artifact
+                                tar -czf artifacts/node-app-${env.NODE_VERSION}.tar.gz -C apps/node-app .
+                                echo "✅ Node.js artifact v${env.NODE_VERSION} created successfully"
+                                
+                                # Verify artifact
+                                ls -lh artifacts/node-app-${env.NODE_VERSION}.tar.gz
+                            else
+                                echo "❌ Node.js app directory not found"
+                                exit 1
+                            fi
                         """
                     }
                     
-                    sh 'ls -la artifacts/ 2>/dev/null || echo "No artifacts directory"'
+                    sh '''
+                        echo "=== Created Artifacts ==="
+                        ls -la artifacts/ 2>/dev/null || echo "No artifacts directory"
+                    '''
                 }
             }
         }
         
-        stage('Upload Artifacts to S3') {
+        stage('Upload Versioned Artifacts to S3') {
             steps {
                 script {
-                    echo "📤 Uploading artifacts to S3..."
-                    
-                    def s3BasePath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
-                    
-                    // Ensure bucket exists
-                    sh """
-                        aws s3 mb s3://${env.S3_BUCKET} || echo "Bucket already exists or creation failed"
-                    """
+                    echo "📤 Uploading versioned artifacts to S3..."
                     
                     // Upload Flask artifact if exists
-                    if (fileExists("artifacts/flask-app-${params.FLASK_VERSION}.tar.gz")) {
+                    if (fileExists("artifacts/flask-app-${env.FLASK_VERSION}.tar.gz")) {
                         sh """
-                            echo "Uploading Flask artifact to S3..."
-                            aws s3 cp artifacts/flask-app-${params.FLASK_VERSION}.tar.gz \
-                                s3://${env.S3_BUCKET}/${s3BasePath}/flask-app-${params.FLASK_VERSION}.tar.gz \
-                                --metadata version=${params.FLASK_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
-                            echo "✅ Flask artifact uploaded to S3"
+                            echo "Uploading Flask artifact v${env.FLASK_VERSION} to S3..."
+                            aws s3 cp artifacts/flask-app-${env.FLASK_VERSION}.tar.gz \
+                                s3://${env.S3_BUCKET}/artifacts/flask/${env.FLASK_VERSION}/flask-app-${env.FLASK_VERSION}.tar.gz \
+                                --metadata version=${env.FLASK_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP},app=flask
+                            echo "✅ Flask artifact v${env.FLASK_VERSION} uploaded to S3"
                         """
                     }
                     
                     // Upload Node.js artifact if exists
-                    if (fileExists("artifacts/node-app-${params.NODE_VERSION}.tar.gz")) {
+                    if (fileExists("artifacts/node-app-${env.NODE_VERSION}.tar.gz")) {
                         sh """
-                            echo "Uploading Node.js artifact to S3..."
-                            aws s3 cp artifacts/node-app-${params.NODE_VERSION}.tar.gz \
-                                s3://${env.S3_BUCKET}/${s3BasePath}/node-app-${params.NODE_VERSION}.tar.gz \
-                                --metadata version=${params.NODE_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
-                            echo "✅ Node.js artifact uploaded to S3"
+                            echo "Uploading Node.js artifact v${env.NODE_VERSION} to S3..."
+                            aws s3 cp artifacts/node-app-${env.NODE_VERSION}.tar.gz \
+                                s3://${env.S3_BUCKET}/artifacts/node/${env.NODE_VERSION}/node-app-${env.NODE_VERSION}.tar.gz \
+                                --metadata version=${env.NODE_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP},app=node
+                            echo "✅ Node.js artifact v${env.NODE_VERSION} uploaded to S3"
                         """
                     }
                     
+                    // Update and upload version file
+                    updateVersionFile()
+                    
                     // List uploaded artifacts
                     sh """
-                        echo "=== Uploaded Artifacts ==="
-                        aws s3 ls s3://${env.S3_BUCKET}/${s3BasePath}/ --recursive --human-readable || echo "No artifacts uploaded yet"
+                        echo "=== Current Flask Artifacts ==="
+                        aws s3 ls s3://${env.S3_BUCKET}/artifacts/flask/ --recursive --human-readable || echo "No Flask artifacts"
+                        echo ""
+                        echo "=== Current Node.js Artifacts ==="
+                        aws s3 ls s3://${env.S3_BUCKET}/artifacts/node/ --recursive --human-readable || echo "No Node.js artifacts"
+                    """
+                }
+            }
+        }
+        
+        stage('Cleanup Old Artifacts') {
+            when {
+                expression { !params.SKIP_CLEANUP }
+            }
+            steps {
+                script {
+                    echo "🧹 Cleaning up artifacts older than ${env.ARTIFACT_RETENTION_DAYS} days..."
+                    
+                    sh """
+                        # Calculate cutoff date (3 days ago)
+                        CUTOFF_DATE=\$(date -d "${env.ARTIFACT_RETENTION_DAYS} days ago" '+%Y-%m-%d')
+                        echo "Cleaning artifacts older than: \$CUTOFF_DATE"
+                        
+                        # Function to clean artifacts for an app type
+                        cleanup_app_artifacts() {
+                            local app_type=\$1
+                            echo "=== Cleaning \$app_type artifacts ==="
+                            
+                            # List all artifacts with dates
+                            aws s3api list-objects-v2 --bucket ${env.S3_BUCKET} --prefix "artifacts/\$app_type/" --query 'Contents[?LastModified<`'\$CUTOFF_DATE'`].[Key,LastModified,Size]' --output table
+                            
+                            # Get list of old artifacts
+                            OLD_ARTIFACTS=\$(aws s3api list-objects-v2 --bucket ${env.S3_BUCKET} --prefix "artifacts/\$app_type/" --query 'Contents[?LastModified<`'\$CUTOFF_DATE'`].Key' --output text)
+                            
+                            if [ ! -z "\$OLD_ARTIFACTS" ] && [ "\$OLD_ARTIFACTS" != "None" ]; then
+                                echo "Found old \$app_type artifacts to delete:"
+                                echo "\$OLD_ARTIFACTS"
+                                
+                                # Delete old artifacts
+                                for artifact in \$OLD_ARTIFACTS; do
+                                    echo "Deleting: \$artifact"
+                                    aws s3 rm s3://${env.S3_BUCKET}/\$artifact
+                                done
+                                echo "✅ Old \$app_type artifacts cleaned up"
+                            else
+                                echo "ℹ️  No old \$app_type artifacts to clean"
+                            fi
+                        }
+                        
+                        # Clean Flask artifacts
+                        cleanup_app_artifacts "flask"
+                        
+                        # Clean Node.js artifacts
+                        cleanup_app_artifacts "node"
+                        
+                        # Also clean old deployment reports
+                        echo "=== Cleaning old deployment reports ==="
+                        OLD_REPORTS=\$(aws s3api list-objects-v2 --bucket ${env.S3_BUCKET} --prefix "deployments/" --query 'Contents[?LastModified<`'\$CUTOFF_DATE'`].Key' --output text)
+                        
+                        if [ ! -z "\$OLD_REPORTS" ] && [ "\$OLD_REPORTS" != "None" ]; then
+                            echo "Found old deployment reports to delete:"
+                            echo "\$OLD_REPORTS"
+                            for report in \$OLD_REPORTS; do
+                                echo "Deleting: \$report"
+                                aws s3 rm s3://${env.S3_BUCKET}/\$report
+                            done
+                            echo "✅ Old deployment reports cleaned up"
+                        else
+                            echo "ℹ️  No old deployment reports to clean"
+                        fi
+                        
+                        echo "🎯 Cleanup completed!"
                     """
                 }
             }
@@ -223,12 +370,12 @@ pipeline {
                     sh """
                         cd ansible
                         echo "=== Starting Ansible Deployment ==="
-                        echo "Flask Version: ${params.FLASK_VERSION}"
-                        echo "Node Version: ${params.NODE_VERSION}" 
+                        echo "Flask Version: ${env.FLASK_VERSION}"
+                        echo "Node Version: ${env.NODE_VERSION}" 
                         echo "App Type: ${params.APP_TYPE}"
                         
                         ansible-playbook -i inventory/host.ini deploy-apps.yml \
-                            --extra-vars "flask_version=${params.FLASK_VERSION} node_version=${params.NODE_VERSION} deployment_type=${params.APP_TYPE}" \
+                            --extra-vars "flask_version=${env.FLASK_VERSION} node_version=${env.NODE_VERSION} deployment_type=${params.APP_TYPE} s3_bucket=${env.S3_BUCKET}" \
                             --verbose
                     """
                 }
@@ -255,12 +402,15 @@ pipeline {
                         // Test Flask app
                         if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
                             sh """
-                                echo "Testing Flask app on ${targetIP}:5000..."
+                                echo "Testing Flask app v${env.FLASK_VERSION} on ${targetIP}:5000..."
                                 for i in {1..5}; do
                                     if curl -f -s --connect-timeout 5 http://${targetIP}:5000 > /dev/null; then
-                                        echo "✅ Flask app is RUNNING"
+                                        echo "✅ Flask app v${env.FLASK_VERSION} is RUNNING"
                                         echo "Response preview:"
                                         curl -s http://${targetIP}:5000 | head -3
+                                        
+                                        # Check version endpoint if available
+                                        curl -s http://${targetIP}:5000/version 2>/dev/null | jq . || echo "No version endpoint available"
                                         break
                                     else
                                         echo "⏳ Attempt \$i: Flask app not ready..."
@@ -273,12 +423,15 @@ pipeline {
                         // Test Node.js app
                         if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
                             sh """
-                                echo "Testing Node.js app on ${targetIP}:3000..."
+                                echo "Testing Node.js app v${env.NODE_VERSION} on ${targetIP}:3000..."
                                 for i in {1..5}; do
                                     if curl -f -s --connect-timeout 5 http://${targetIP}:3000 > /dev/null; then
-                                        echo "✅ Node.js app is RUNNING"
+                                        echo "✅ Node.js app v${env.NODE_VERSION} is RUNNING"
                                         echo "Response preview:"
                                         curl -s http://${targetIP}:3000 | head -3
+                                        
+                                        # Check version endpoint if available
+                                        curl -s http://${targetIP}:3000/version 2>/dev/null | jq . || echo "No version endpoint available"
                                         break
                                     else
                                         echo "⏳ Attempt \$i: Node.js app not ready..."
@@ -299,9 +452,7 @@ pipeline {
         always {
             echo "🏁 Pipeline execution completed"
             script {
-                def s3BasePath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
-                
-                // Create deployment report
+                // Create comprehensive deployment report
                 sh """
                     echo "=== DEPLOYMENT REPORT ===" > report.txt
                     echo "Timestamp: \$(date)" >> report.txt
@@ -309,41 +460,54 @@ pipeline {
                     echo "Agent: \$(hostname)" >> report.txt
                     echo "Workspace: \$(pwd)" >> report.txt
                     echo "Applications: ${params.APP_TYPE}" >> report.txt
-                    echo "Flask Version: ${params.FLASK_VERSION}" >> report.txt
-                    echo "Node Version: ${params.NODE_VERSION}" >> report.txt
+                    echo "Flask Version: ${env.FLASK_VERSION}" >> report.txt
+                    echo "Node Version: ${env.NODE_VERSION}" >> report.txt
+                    echo "Version Increment: ${params.VERSION_INCREMENT}" >> report.txt
                     echo "Build Number: ${env.BUILD_NUMBER}" >> report.txt
-                    echo "S3 Location: s3://${env.S3_BUCKET}/${s3BasePath}/" >> report.txt
                     echo "Build Timestamp: ${env.BUILD_TIMESTAMP}" >> report.txt
+                    echo "Artifact Retention: ${env.ARTIFACT_RETENTION_DAYS} days" >> report.txt
+                    echo "" >> report.txt
+                    echo "=== ARTIFACT LOCATIONS ===" >> report.txt
+                    echo "Flask Artifacts: s3://${env.S3_BUCKET}/artifacts/flask/${env.FLASK_VERSION}/" >> report.txt
+                    echo "Node Artifacts: s3://${env.S3_BUCKET}/artifacts/node/${env.NODE_VERSION}/" >> report.txt
+                    echo "Version File: s3://${env.S3_BUCKET}/versions/${env.VERSION_FILE}" >> report.txt
                 """
                 
                 // Upload report to S3
+                def reportPath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
                 sh """
                     aws s3 cp report.txt \
-                        s3://${env.S3_BUCKET}/${s3BasePath}/deployment-report.txt \
-                        --metadata build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                        s3://${env.S3_BUCKET}/${reportPath}/deployment-report.txt \
+                        --metadata build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP},flask_version=${env.FLASK_VERSION},node_version=${env.NODE_VERSION}
                 """
                 
-                // Archive artifacts locally (optional)
-                archiveArtifacts artifacts: 'artifacts/*.tar.gz, report.txt', fingerprint: true
+                // Archive artifacts locally
+                archiveArtifacts artifacts: 'artifacts/*.tar.gz, report.txt, version.json', fingerprint: true
                 
-                // Display S3 location
-                echo "Artifacts stored in S3: s3://${env.S3_BUCKET}/${s3BasePath}/"
+                // Display summary
+                echo "📊 Deployment Summary:"
+                echo "Flask Version: ${env.FLASK_VERSION}"
+                echo "Node Version: ${env.NODE_VERSION}"
+                echo "Report stored: s3://${env.S3_BUCKET}/${reportPath}/deployment-report.txt"
             }
         }
         
         success {
             echo "🎉 Deployment completed successfully!"
             script {
-                def s3Path = "s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/"
-                echo "✅ Artifacts successfully uploaded to: ${s3Path}"
+                def reportPath = "s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/"
+                echo "✅ Versioned artifacts successfully created and uploaded:"
+                echo "   Flask v${env.FLASK_VERSION}: s3://${env.S3_BUCKET}/artifacts/flask/${env.FLASK_VERSION}/"
+                echo "   Node v${env.NODE_VERSION}: s3://${env.S3_BUCKET}/artifacts/node/${env.NODE_VERSION}/"
+                echo "📎 Deployment report: ${reportPath}deployment-report.txt"
                 
-                // Generate presigned URL for easy access (valid for 7 days)
+                // Generate presigned URL for report (valid for 7 days)
                 sh """
                     aws s3 presign s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/deployment-report.txt \
                         --expires-in 604800 > presigned-url.txt
                 """
                 def presignedUrl = readFile('presigned-url.txt').trim()
-                echo "📎 Presigned report URL: ${presignedUrl}"
+                echo "🔗 Presigned report URL: ${presignedUrl}"
             }
         }
         
@@ -354,10 +518,15 @@ pipeline {
                     echo "=== TROUBLESHOOTING STEPS ==="
                     echo "1. Check agent connectivity: Is 'Jenkins agent' online?"
                     echo "2. Verify repository structure: Are all required files present?"
-                    echo "3. Check Ansible installation on agent"
-                    echo "4. Verify SSH connectivity to target server (172.31.31.22)"
-                    echo "5. Review Ansible playbook syntax and variables"
-                    echo "6. Check AWS IAM role permissions for S3 access"
+                    echo "3. Check version management: Review version.json file"
+                    echo "4. Check Ansible installation on agent"
+                    echo "5. Verify SSH connectivity to target server"
+                    echo "6. Review Ansible playbook syntax and variables"
+                    echo "7. Check AWS IAM role permissions for S3 access"
+                    echo "8. Verify jq is installed for JSON processing"
+                    echo ""
+                    echo "=== CURRENT VERSIONS ==="
+                    cat version.json 2>/dev/null || echo "No version file available"
                 '''
             }
         }
@@ -365,5 +534,62 @@ pipeline {
         unstable {
             echo "⚠️ Deployment completed with warnings"
         }
+    }
+}
+
+// Helper function to calculate new version
+def calculateNewVersion(appType) {
+    def versionFile = readFile('version.json')
+    def versionData = readJSON text: versionFile
+    
+    def currentVersion = versionData[appType].current
+    
+    def versionParts = currentVersion.split('\\.')
+    def major = Integer.parseInt(versionParts[0])
+    def minor = Integer.parseInt(versionParts[1])
+    def patch = Integer.parseInt(versionParts[2])
+    
+    switch(params.VERSION_INCREMENT) {
+        case 'major':
+            major++
+            minor = 0
+            patch = 0
+            break
+        case 'minor':
+            minor++
+            patch = 0
+            break
+        case 'patch':
+        default:
+            patch++
+            break
+    }
+    
+    return "${major}.${minor}.${patch}"
+}
+
+// Helper function to update version file
+def updateVersionFile() {
+    script {
+        sh """
+            # Update version file with new versions
+            jq --arg flask_version "${env.FLASK_VERSION}" --arg node_version "${env.NODE_VERSION}" '
+                .flask.current = \$flask_version |
+                .flask.history += [\$flask_version] |
+                .flask.history |= unique |
+                .node.current = \$node_version |
+                .node.history += [\$node_version] |
+                .node.history |= unique
+            ' ${env.VERSION_FILE} > ${env.VERSION_FILE}.tmp && mv ${env.VERSION_FILE}.tmp ${env.VERSION_FILE}
+            
+            echo "✅ Updated version file:"
+            cat ${env.VERSION_FILE}
+            
+            # Upload updated version file to S3
+            aws s3 cp ${env.VERSION_FILE} s3://${env.S3_BUCKET}/versions/${env.VERSION_FILE} \
+                --metadata build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+            
+            echo "✅ Version file uploaded to S3"
+        """
     }
 }
