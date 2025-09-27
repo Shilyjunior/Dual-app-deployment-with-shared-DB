@@ -75,7 +75,7 @@ app.get('/', async (req, res) => {
                 <h3>Members of Team 7:</h3>
                 <ul style="list-style-type: none; padding-left: 0;">
                     <li>• Saudat Bada-Akande</li>
-                    <li>• Sulaiman Big</li>
+                    <li>• Sulaiman Adamu</li>
                     <li>• Akeem Adeshile</li>
                 </ul>
             </div>
