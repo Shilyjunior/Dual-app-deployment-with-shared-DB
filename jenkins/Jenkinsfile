@@ -1,3 +1,5 @@
+Current working pipeline
+
 pipeline {
     agent {
         label 'Jenkins agent'
@@ -5,87 +7,20 @@ pipeline {
     
     parameters {
         choice(name: 'APP_TYPE', choices: ['both', 'flask', 'node'], description: 'Select application to deploy')
+        string(name: 'FLASK_VERSION', defaultValue: '1.0.0', description: 'Flask app version')
+        string(name: 'NODE_VERSION', defaultValue: '1.0.0', description: 'Node.js app version')
         booleanParam(name: 'DRY_RUN', defaultValue: false, description: 'Check mode (dry run) without making changes')
     }
     
     environment {
         ANSIBLE_HOST_KEY_CHECKING = 'false'
         WORKSPACE_DIR = "/home/ubuntu/jenkins-workspace"
-        AWS_DEFAULT_REGION = 'us-east-1'
+        AWS_DEFAULT_REGION = 'us-east-1'  // Change if your bucket is in different region
         S3_BUCKET = 'group7-dual-app-artifacts'
         BUILD_TIMESTAMP = sh(script: "date +%Y%m%d_%H%M%S", returnStdout: true).trim()
     }
     
     stages {
-        stage('Initialize and Auto-Increment Versions') {
-            steps {
-                script {
-                    echo "🔢 Auto-detecting and incrementing versions..."
-                    
-                    // Create version info directory
-                    sh 'mkdir -p version-info'
-                    
-                    // Determine version bump type based on commit messages (default to patch)
-                    env.VERSION_BUMP = determineVersionBump()
-                    echo "Auto-detected version bump type: ${env.VERSION_BUMP}"
-                    
-                    // Get current versions from S3 and auto-increment
-                    sh '''
-                        # Try to get latest Flask version from S3
-                        if aws s3 ls s3://${S3_BUCKET}/versions/flask-app/latest-version.txt > /dev/null 2>&1; then
-                            echo "📥 Fetching current Flask version from S3..."
-                            aws s3 cp s3://${S3_BUCKET}/versions/flask-app/latest-version.txt version-info/flask-current.txt
-                        else
-                            echo "📝 No existing Flask version found, starting with 1.0.0"
-                            echo "1.0.0" > version-info/flask-current.txt
-                        fi
-                        
-                        # Try to get latest Node.js version from S3
-                        if aws s3 ls s3://${S3_BUCKET}/versions/node-app/latest-version.txt > /dev/null 2>&1; then
-                            echo "📥 Fetching current Node.js version from S3..."
-                            aws s3 cp s3://${S3_BUCKET}/versions/node-app/latest-version.txt version-info/node-current.txt
-                        else
-                            echo "📝 No existing Node.js version found, starting with 1.0.0"
-                            echo "1.0.0" > version-info/node-current.txt
-                        fi
-                    '''
-                    
-                    // Read current versions
-                    env.FLASK_CURRENT_VERSION = readFile('version-info/flask-current.txt').trim()
-                    env.NODE_CURRENT_VERSION = readFile('version-info/node-current.txt').trim()
-                    
-                    echo "Current Flask version: ${env.FLASK_CURRENT_VERSION}"
-                    echo "Current Node.js version: ${env.NODE_CURRENT_VERSION}"
-                    
-                    // Auto-increment versions
-                    env.FLASK_NEW_VERSION = calculateVersion(env.FLASK_CURRENT_VERSION, env.VERSION_BUMP)
-                    env.NODE_NEW_VERSION = calculateVersion(env.NODE_CURRENT_VERSION, env.VERSION_BUMP)
-                    
-                    echo "New Flask version: ${env.FLASK_NEW_VERSION}"
-                    echo "New Node.js version: ${env.NODE_NEW_VERSION}"
-                    
-                    // Set artifact names and paths
-                    env.FLASK_ARTIFACT_NAME = "flask-app-${env.FLASK_NEW_VERSION}.tar.gz"
-                    env.NODE_ARTIFACT_NAME = "node-app-${env.NODE_NEW_VERSION}.tar.gz"
-                    env.FLASK_S3_PATH = "versions/flask-app/${env.FLASK_NEW_VERSION}"
-                    env.NODE_S3_PATH = "versions/node-app/${env.NODE_NEW_VERSION}"
-                    env.LATEST_S3_PATH = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
-                    
-                    // Save new versions to files
-                    sh """
-                        echo "${env.FLASK_NEW_VERSION}" > version-info/flask-new.txt
-                        echo "${env.NODE_NEW_VERSION}" > version-info/node-new.txt
-                        echo "${env.VERSION_BUMP}" > version-info/bump-type.txt
-                    """
-                    
-                    // Display version progression
-                    echo "=== AUTOMATIC VERSION INCREMENT ==="
-                    echo "Flask: ${env.FLASK_CURRENT_VERSION} → ${env.FLASK_NEW_VERSION} (${env.VERSION_BUMP} bump)"
-                    echo "Node.js: ${env.NODE_CURRENT_VERSION} → ${env.NODE_NEW_VERSION} (${env.VERSION_BUMP} bump)"
-                }
-            }
-        }
-        
         stage('Verify Agent Environment') {
             steps {
                 script {
@@ -156,6 +91,25 @@ pipeline {
             }
         }
         
+        stage('Install Required Tools') {
+            when {
+                expression { 
+                    sh(script: 'which ansible', returnStatus: true) != 0 
+                }
+            }
+            steps {
+                script {
+                    echo "📦 Installing required tools..."
+                    sh '''
+                        echo "Installing Ansible and dependencies..."
+                        sudo apt update
+                        sudo apt install -y ansible python3-pip sshpass awscli
+                        echo "✅ Tools installed"
+                    '''
+                }
+            }
+        }
+        
         stage('Test AWS S3 Access') {
             steps {
                 script {
@@ -202,50 +156,22 @@ pipeline {
         stage('Build Artifacts') {
             steps {
                 script {
-                    echo "🏗️ Building deployment artifacts with auto-incremented versions..."
-                    echo "Auto-detected bump type: ${env.VERSION_BUMP}"
-                    
+                    echo "🏗️ Building deployment artifacts..."
                     sh 'mkdir -p artifacts'
                     
                     if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
                         sh """
-                            echo "Building Flask app v${env.FLASK_NEW_VERSION}"
-                            if [ -d "apps/flask-app" ]; then
-                                tar -czf artifacts/${env.FLASK_ARTIFACT_NAME} -C apps/flask-app .
-                                echo "✅ Flask artifact created: ${env.FLASK_ARTIFACT_NAME}"
-                                
-                                # Create version metadata file
-                                echo "version=${env.FLASK_NEW_VERSION}" > artifacts/flask-version.txt
-                                echo "previous_version=${env.FLASK_CURRENT_VERSION}" >> artifacts/flask-version.txt
-                                echo "build_number=${env.BUILD_NUMBER}" >> artifacts/flask-version.txt
-                                echo "timestamp=${env.BUILD_TIMESTAMP}" >> artifacts/flask-version.txt
-                                echo "version_bump=${env.VERSION_BUMP}" >> artifacts/flask-version.txt
-                                echo "commit_hash=\$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" >> artifacts/flask-version.txt
-                                echo "commit_message=\$(git log -1 --pretty=%B 2>/dev/null | head -1 || echo 'unknown')" >> artifacts/flask-version.txt
-                            else
-                                echo "❌ Flask app directory not found"
-                            fi
+                            echo "Building Flask app v${params.FLASK_VERSION}"
+                            [ -d "apps/flask-app" ] && tar -czf artifacts/flask-app-${params.FLASK_VERSION}.tar.gz -C apps/flask-app . || echo "Flask app directory not found"
+                            echo "✅ Flask artifact creation attempted"
                         """
                     }
                     
                     if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
                         sh """
-                            echo "Building Node.js app v${env.NODE_NEW_VERSION}"
-                            if [ -d "apps/node-app" ]; then
-                                tar -czf artifacts/${env.NODE_ARTIFACT_NAME} -C apps/node-app .
-                                echo "✅ Node.js artifact created: ${env.NODE_ARTIFACT_NAME}"
-                                
-                                # Create version metadata file
-                                echo "version=${env.NODE_NEW_VERSION}" > artifacts/node-version.txt
-                                echo "previous_version=${env.NODE_CURRENT_VERSION}" >> artifacts/node-version.txt
-                                echo "build_number=${env.BUILD_NUMBER}" >> artifacts/node-version.txt
-                                echo "timestamp=${env.BUILD_TIMESTAMP}" >> artifacts/node-version.txt
-                                echo "version_bump=${env.VERSION_BUMP}" >> artifacts/node-version.txt
-                                echo "commit_hash=\$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" >> artifacts/node-version.txt
-                                echo "commit_message=\$(git log -1 --pretty=%B 2>/dev/null | head -1 || echo 'unknown')" >> artifacts/node-version.txt
-                            else
-                                echo "❌ Node.js app directory not found"
-                            fi
+                            echo "Building Node.js app v${params.NODE_VERSION}"
+                            [ -d "apps/node-app" ] && tar -czf artifacts/node-app-${params.NODE_VERSION}.tar.gz -C apps/node-app . || echo "Node.js app directory not found"
+                            echo "✅ Node.js artifact creation attempted"
                         """
                     }
                     
@@ -257,7 +183,9 @@ pipeline {
         stage('Upload Artifacts to S3') {
             steps {
                 script {
-                    echo "📤 Uploading artifacts to S3 with auto-incremented versions..."
+                    echo "📤 Uploading artifacts to S3..."
+                    
+                    def s3BasePath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
                     
                     // Ensure bucket exists
                     sh """
@@ -265,80 +193,31 @@ pipeline {
                     """
                     
                     // Upload Flask artifact if exists
-                    if (fileExists("artifacts/${env.FLASK_ARTIFACT_NAME}")) {
+                    if (fileExists("artifacts/flask-app-${params.FLASK_VERSION}.tar.gz")) {
                         sh """
-                            echo "Uploading Flask artifact v${env.FLASK_NEW_VERSION}..."
-                            
-                            # Upload to version-specific path
-                            aws s3 cp artifacts/${env.FLASK_ARTIFACT_NAME} \
-                                s3://${env.S3_BUCKET}/${env.FLASK_S3_PATH}/${env.FLASK_ARTIFACT_NAME} \
-                                --metadata version=${env.FLASK_NEW_VERSION},previous_version=${env.FLASK_CURRENT_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP},type=flask-app,bump=${env.VERSION_BUMP}
-                            
-                            # Upload to latest deployment path
-                            aws s3 cp artifacts/${env.FLASK_ARTIFACT_NAME} \
-                                s3://${env.S3_BUCKET}/${env.LATEST_S3_PATH}/${env.FLASK_ARTIFACT_NAME} \
-                                --metadata version=${env.FLASK_NEW_VERSION},previous_version=${env.FLASK_CURRENT_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP},type=flask-app,bump=${env.VERSION_BUMP}
-                            
-                            # Upload version metadata
-                            aws s3 cp artifacts/flask-version.txt \
-                                s3://${env.S3_BUCKET}/${env.FLASK_S3_PATH}/version-info.txt
-                                
-                            # Update latest version pointer
-                            echo "${env.FLASK_NEW_VERSION}" | aws s3 cp - s3://${env.S3_BUCKET}/versions/flask-app/latest-version.txt
-                            
-                            # Store version history
-                            echo "${env.BUILD_TIMESTAMP},${env.FLASK_NEW_VERSION},${env.VERSION_BUMP},${env.BUILD_NUMBER},\$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" | aws s3 cp - s3://${env.S3_BUCKET}/versions/flask-app/version-history.log --append
-                            
-                            echo "✅ Flask artifact uploaded:"
-                            echo "   - Versioned: s3://${env.S3_BUCKET}/${env.FLASK_S3_PATH}/"
-                            echo "   - Latest: s3://${env.S3_BUCKET}/${env.LATEST_S3_PATH}/"
+                            echo "Uploading Flask artifact to S3..."
+                            aws s3 cp artifacts/flask-app-${params.FLASK_VERSION}.tar.gz \
+                                s3://${env.S3_BUCKET}/${s3BasePath}/flask-app-${params.FLASK_VERSION}.tar.gz \
+                                --metadata version=${params.FLASK_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                            echo "✅ Flask artifact uploaded to S3"
                         """
                     }
                     
                     // Upload Node.js artifact if exists
-                    if (fileExists("artifacts/${env.NODE_ARTIFACT_NAME}")) {
+                    if (fileExists("artifacts/node-app-${params.NODE_VERSION}.tar.gz")) {
                         sh """
-                            echo "Uploading Node.js artifact v${env.NODE_NEW_VERSION}..."
-                            
-                            # Upload to version-specific path
-                            aws s3 cp artifacts/${env.NODE_ARTIFACT_NAME} \
-                                s3://${env.S3_BUCKET}/${env.NODE_S3_PATH}/${env.NODE_ARTIFACT_NAME} \
-                                --metadata version=${env.NODE_NEW_VERSION},previous_version=${env.NODE_CURRENT_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP},type=node-app,bump=${env.VERSION_BUMP}
-                            
-                            # Upload to latest deployment path
-                            aws s3 cp artifacts/${env.NODE_ARTIFACT_NAME} \
-                                s3://${env.S3_BUCKET}/${env.LATEST_S3_PATH}/${env.NODE_ARTIFACT_NAME} \
-                                --metadata version=${env.NODE_NEW_VERSION},previous_version=${env.NODE_CURRENT_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP},type=node-app,bump=${env.VERSION_BUMP}
-                            
-                            # Upload version metadata
-                            aws s3 cp artifacts/node-version.txt \
-                                s3://${env.S3_BUCKET}/${env.NODE_S3_PATH}/version-info.txt
-                                
-                            # Update latest version pointer
-                            echo "${env.NODE_NEW_VERSION}" | aws s3 cp - s3://${env.S3_BUCKET}/versions/node-app/latest-version.txt
-                            
-                            # Store version history
-                            echo "${env.BUILD_TIMESTAMP},${env.NODE_NEW_VERSION},${env.VERSION_BUMP},${env.BUILD_NUMBER},\$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" | aws s3 cp - s3://${env.S3_BUCKET}/versions/node-app/version-history.log --append
-                            
-                            echo "✅ Node.js artifact uploaded:"
-                            echo "   - Versioned: s3://${env.S3_BUCKET}/${env.NODE_S3_PATH}/"
-                            echo "   - Latest: s3://${env.S3_BUCKET}/${env.LATEST_S3_PATH}/"
+                            echo "Uploading Node.js artifact to S3..."
+                            aws s3 cp artifacts/node-app-${params.NODE_VERSION}.tar.gz \
+                                s3://${env.S3_BUCKET}/${s3BasePath}/node-app-${params.NODE_VERSION}.tar.gz \
+                                --metadata version=${params.NODE_VERSION},build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
+                            echo "✅ Node.js artifact uploaded to S3"
                         """
                     }
                     
-                    // Display version progression
+                    // List uploaded artifacts
                     sh """
-                        echo "=== VERSION PROGRESSION ==="
-                        echo "Flask: ${env.FLASK_CURRENT_VERSION} → ${env.FLASK_NEW_VERSION} (${env.VERSION_BUMP})"
-                        echo "Node.js: ${env.NODE_CURRENT_VERSION} → ${env.NODE_NEW_VERSION} (${env.VERSION_BUMP})"
-                        
-                        echo ""
-                        echo "=== RECENT VERSION HISTORY ==="
-                        echo "Flask app versions:"
-                        aws s3 ls s3://${env.S3_BUCKET}/versions/flask-app/ --recursive --human-readable | grep -E '[0-9]+\\.[0-9]+\\.[0-9]+' | tail -3 || echo "No versions found"
-                        echo ""
-                        echo "Node.js app versions:"
-                        aws s3 ls s3://${env.S3_BUCKET}/versions/node-app/ --recursive --human-readable | grep -E '[0-9]+\\.[0-9]+\\.[0-9]+' | tail -3 || echo "No versions found"
+                        echo "=== Uploaded Artifacts ==="
+                        aws s3 ls s3://${env.S3_BUCKET}/${s3BasePath}/ --recursive --human-readable || echo "No artifacts uploaded yet"
                     """
                 }
             }
@@ -354,7 +233,7 @@ pipeline {
             }
             steps {
                 script {
-                    echo "🚀 Deploying applications with auto-incremented versions..."
+                    echo "🚀 Deploying applications..."
                     
                     // Copy init.sql to temp location for Ansible
                     sh '''
@@ -365,13 +244,12 @@ pipeline {
                     sh """
                         cd ansible
                         echo "=== Starting Ansible Deployment ==="
-                        echo "Flask Version: ${env.FLASK_NEW_VERSION} (was ${env.FLASK_CURRENT_VERSION})"
-                        echo "Node Version: ${env.NODE_NEW_VERSION} (was ${env.NODE_CURRENT_VERSION})" 
+                        echo "Flask Version: ${params.FLASK_VERSION}"
+                        echo "Node Version: ${params.NODE_VERSION}" 
                         echo "App Type: ${params.APP_TYPE}"
-                        echo "Auto Version Bump: ${env.VERSION_BUMP}"
                         
                         ansible-playbook -i inventory/host.ini deploy-apps.yml \
-                            --extra-vars "flask_version=${env.FLASK_NEW_VERSION} node_version=${env.NODE_NEW_VERSION} deployment_type=${params.APP_TYPE}" \
+                            --extra-vars "flask_version=${params.FLASK_VERSION} node_version=${params.NODE_VERSION} deployment_type=${params.APP_TYPE}" \
                             --verbose
                     """
                 }
@@ -398,10 +276,10 @@ pipeline {
                         // Test Flask app
                         if (params.APP_TYPE == 'flask' || params.APP_TYPE == 'both') {
                             sh """
-                                echo "Testing Flask app v${env.FLASK_NEW_VERSION} on ${targetIP}:5000..."
+                                echo "Testing Flask app on ${targetIP}:5000..."
                                 for i in {1..5}; do
                                     if curl -f -s --connect-timeout 5 http://${targetIP}:5000 > /dev/null; then
-                                        echo "✅ Flask app v${env.FLASK_NEW_VERSION} is RUNNING"
+                                        echo "✅ Flask app is RUNNING"
                                         echo "Response preview:"
                                         curl -s http://${targetIP}:5000 | head -3
                                         break
@@ -416,10 +294,10 @@ pipeline {
                         // Test Node.js app
                         if (params.APP_TYPE == 'node' || params.APP_TYPE == 'both') {
                             sh """
-                                echo "Testing Node.js app v${env.NODE_NEW_VERSION} on ${targetIP}:3000..."
+                                echo "Testing Node.js app on ${targetIP}:3000..."
                                 for i in {1..5}; do
                                     if curl -f -s --connect-timeout 5 http://${targetIP}:3000 > /dev/null; then
-                                        echo "✅ Node.js app v${env.NODE_NEW_VERSION} is RUNNING"
+                                        echo "✅ Node.js app is RUNNING"
                                         echo "Response preview:"
                                         curl -s http://${targetIP}:3000 | head -3
                                         break
@@ -442,79 +320,51 @@ pipeline {
         always {
             echo "🏁 Pipeline execution completed"
             script {
+                def s3BasePath = "deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}"
+                
                 // Create deployment report
                 sh """
-                    echo "=== AUTOMATED DEPLOYMENT REPORT ===" > report.txt
+                    echo "=== DEPLOYMENT REPORT ===" > report.txt
                     echo "Timestamp: \$(date)" >> report.txt
                     echo "Status: ${currentBuild.result ?: 'SUCCESS'}" >> report.txt
                     echo "Agent: \$(hostname)" >> report.txt
+                    echo "Workspace: \$(pwd)" >> report.txt
                     echo "Applications: ${params.APP_TYPE}" >> report.txt
-                    echo "Auto Version Bump: ${env.VERSION_BUMP}" >> report.txt
-                    echo "" >> report.txt
-                    echo "=== VERSION CHANGES ===" >> report.txt
-                    echo "Flask: ${env.FLASK_CURRENT_VERSION} → ${env.FLASK_NEW_VERSION}" >> report.txt
-                    echo "Node.js: ${env.NODE_CURRENT_VERSION} → ${env.NODE_NEW_VERSION}" >> report.txt
-                    echo "" >> report.txt
+                    echo "Flask Version: ${params.FLASK_VERSION}" >> report.txt
+                    echo "Node Version: ${params.NODE_VERSION}" >> report.txt
                     echo "Build Number: ${env.BUILD_NUMBER}" >> report.txt
+                    echo "S3 Location: s3://${env.S3_BUCKET}/${s3BasePath}/" >> report.txt
                     echo "Build Timestamp: ${env.BUILD_TIMESTAMP}" >> report.txt
-                    echo "Commit: \$(git rev-parse --short HEAD 2>/dev/null || echo 'unknown')" >> report.txt
-                    echo "" >> report.txt
-                    echo "=== S3 STORAGE LOCATIONS ===" >> report.txt
-                    echo "Latest Deployment: s3://${env.S3_BUCKET}/${env.LATEST_S3_PATH}/" >> report.txt
-                    echo "Flask Versioned: s3://${env.S3_BUCKET}/${env.FLASK_S3_PATH}/" >> report.txt
-                    echo "Node.js Versioned: s3://${env.S3_BUCKET}/${env.NODE_S3_PATH}/" >> report.txt
                 """
                 
-                // Upload report
+                // Upload report to S3
                 sh """
                     aws s3 cp report.txt \
-                        s3://${env.S3_BUCKET}/${env.LATEST_S3_PATH}/deployment-report.txt
+                        s3://${env.S3_BUCKET}/${s3BasePath}/deployment-report.txt \
+                        --metadata build=${env.BUILD_NUMBER},timestamp=${env.BUILD_TIMESTAMP}
                 """
                 
-                // Archive artifacts locally
-                archiveArtifacts artifacts: 'artifacts/*.tar.gz, artifacts/*.txt, version-info/*.txt, report.txt', fingerprint: true
+                // Archive artifacts locally (optional)
+                archiveArtifacts artifacts: 'artifacts/*.tar.gz, report.txt', fingerprint: true
                 
-                // Display final version info
-                echo "=== AUTOMATIC VERSIONING COMPLETE ==="
-                echo "Next build will automatically increment from:"
-                echo "Flask: ${env.FLASK_NEW_VERSION} → [next version]"
-                echo "Node.js: ${env.NODE_NEW_VERSION} → [next version]"
+                // Display S3 location
+                echo "Artifacts stored in S3: s3://${env.S3_BUCKET}/${s3BasePath}/"
             }
         }
         
         success {
-            echo "🎉 Automated deployment completed successfully!"
+            echo "🎉 Deployment completed successfully!"
             script {
-                // Display comprehensive version history
-                sh """
-                    echo "=== COMPLETE VERSION HISTORY ==="
-                    echo "Flask app version history (last 5 entries):"
-                    aws s3 cp s3://${env.S3_BUCKET}/versions/flask-app/version-history.log - 2>/dev/null | tail -5 || echo "No history yet"
-                    echo ""
-                    echo "Node.js app version history (last 5 entries):"
-                    aws s3 cp s3://${env.S3_BUCKET}/versions/node-app/version-history.log - 2>/dev/null | tail -5 || echo "No history yet"
-                """
+                def s3Path = "s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/"
+                echo "✅ Artifacts successfully uploaded to: ${s3Path}"
                 
-                // Generate presigned URLs
+                // Generate presigned URL for easy access (valid for 7 days)
                 sh """
-                    echo "=== PRESIGNED URLs (valid 7 days) ===" > presigned-urls.txt
-                    aws s3 presign s3://${env.S3_BUCKET}/${env.LATEST_S3_PATH}/deployment-report.txt --expires-in 604800 >> presigned-urls.txt
-                    echo "" >> presigned-urls.txt
-                    
-                    if [ -f "artifacts/${env.FLASK_ARTIFACT_NAME}" ]; then
-                        echo "Flask Artifact (v${env.FLASK_NEW_VERSION}):" >> presigned-urls.txt
-                        aws s3 presign s3://${env.S3_BUCKET}/${env.FLASK_S3_PATH}/${env.FLASK_ARTIFACT_NAME} --expires-in 604800 >> presigned-urls.txt
-                        echo "" >> presigned-urls.txt
-                    fi
-                    
-                    if [ -f "artifacts/${env.NODE_ARTIFACT_NAME}" ]; then
-                        echo "Node.js Artifact (v${env.NODE_NEW_VERSION}):" >> presigned-urls.txt
-                        aws s3 presign s3://${env.S3_BUCKET}/${env.NODE_S3_PATH}/${env.NODE_ARTIFACT_NAME} --expires-in 604800 >> presigned-urls.txt
-                    fi
+                    aws s3 presign s3://${env.S3_BUCKET}/deployments/${env.JOB_NAME}/${env.BUILD_NUMBER}_${env.BUILD_TIMESTAMP}/deployment-report.txt \
+                        --expires-in 604800 > presigned-url.txt
                 """
-                
-                def presignedUrls = readFile('presigned-urls.txt')
-                echo "📎 Presigned URLs:\n${presignedUrls}"
+                def presignedUrl = readFile('presigned-url.txt').trim()
+                echo "📎 Presigned report URL: ${presignedUrl}"
             }
         }
         
@@ -523,79 +373,18 @@ pipeline {
             script {
                 sh '''
                     echo "=== TROUBLESHOOTING STEPS ==="
-                    echo "1. Check agent connectivity"
-                    echo "2. Verify repository structure"
-                    echo "3. Check Ansible installation"
-                    echo "4. Verify SSH connectivity to target server"
-                    echo "5. Review Ansible playbook syntax"
-                    echo "6. Check AWS IAM role permissions"
+                    echo "1. Check agent connectivity: Is 'Jenkins agent' online?"
+                    echo "2. Verify repository structure: Are all required files present?"
+                    echo "3. Check Ansible installation on agent"
+                    echo "4. Verify SSH connectivity to target server (172.31.31.22)"
+                    echo "5. Review Ansible playbook syntax and variables"
+                    echo "6. Check AWS IAM role permissions for S3 access"
                 '''
             }
         }
-    }
-}
-
-// Version calculation function
-def calculateVersion(currentVersion, bumpType) {
-    def parts = currentVersion.split('\\.')
-    def major = parts[0].toInteger()
-    def minor = parts[1].toInteger()
-    def patch = parts[2].toInteger()
-    
-    switch(bumpType) {
-        case 'major':
-            major++
-            minor = 0
-            patch = 0
-            break
-        case 'minor':
-            minor++
-            patch = 0
-            break
-        case 'patch':
-        default:
-            patch++
-            break
-    }
-    
-    return "${major}.${minor}.${patch}"
-}
-
-// Determine version bump type based on commit messages
-def determineVersionBump() {
-    try {
-        // Get the last commit message
-        def commitMessage = sh(
-            script: 'git log -1 --pretty=%B 2>/dev/null | head -1 || echo ""',
-            returnStdout: true
-        ).trim().toLowerCase()
         
-        echo "Analyzing commit message: '${commitMessage}'"
-        
-        // Check for major version indicators
-        if (commitMessage.contains('major:') || commitMessage.contains('breaking change:') || 
-            commitMessage.contains('break:') || commitMessage.matches('.*\\bmajor\\b.*')) {
-            return 'major'
+        unstable {
+            echo "⚠️ Deployment completed with warnings"
         }
-        
-        // Check for minor version indicators  
-        if (commitMessage.contains('feat:') || commitMessage.contains('feature:') || 
-            commitMessage.contains('minor:') || commitMessage.matches('.*\\b(feat|feature|minor)\\b.*')) {
-            return 'minor'
-        }
-        
-        // Check for patch version indicators
-        if (commitMessage.contains('fix:') || commitMessage.contains('bugfix:') || 
-            commitMessage.contains('patch:') || commitMessage.matches('.*\\b(fix|bugfix|patch)\\b.*')) {
-            return 'patch'
-        }
-        
-        // Default to patch for safety
-        echo "No specific version indicators found, defaulting to patch bump"
-        return 'patch'
-        
-    } catch (Exception e) {
-        echo "Error analyzing commit message, defaulting to patch bump: ${e.getMessage()}"
-        return 'patch'
     }
 }
