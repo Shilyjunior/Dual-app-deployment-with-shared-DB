@@ -84,7 +84,7 @@ pipeline {
                         aws s3 mb s3://${env.S3_BUCKET} || echo "Bucket already exists or creation failed"
                     """
                     
-                    // Download existing version file or create new one
+                    // Download existing version file or create new one and calculate versions
                     sh '''
                         echo "Checking for existing version file..."
                         if aws s3 cp s3://${S3_BUCKET}/versions/${VERSION_FILE} . 2>/dev/null; then
@@ -105,14 +105,65 @@ pipeline {
 }
 EOF
                         fi
+                        
+                        echo "=== Calculating new versions ==="
+                        
+                        # Extract current Flask version
+                        CURRENT_FLASK_VERSION=$(jq -r '.flask.current' ${VERSION_FILE})
+                        echo "Current Flask version: $CURRENT_FLASK_VERSION"
+                        
+                        # Extract current Node version  
+                        CURRENT_NODE_VERSION=$(jq -r '.node.current' ${VERSION_FILE})
+                        echo "Current Node version: $CURRENT_NODE_VERSION"
+                        
+                        # Function to increment version
+                        increment_version() {
+                            local current_version=$1
+                            local increment_type=$2
+                            
+                            # Split version into parts
+                            IFS='.' read -r major minor patch <<< "$current_version"
+                            
+                            case $increment_type in
+                                "major")
+                                    major=$((major + 1))
+                                    minor=0
+                                    patch=0
+                                    ;;
+                                "minor")
+                                    minor=$((minor + 1))
+                                    patch=0
+                                    ;;
+                                "patch"|*)
+                                    patch=$((patch + 1))
+                                    ;;
+                            esac
+                            
+                            echo "${major}.${minor}.${patch}"
+                        }
+                        
+                        # Calculate new versions
+                        NEW_FLASK_VERSION=$(increment_version $CURRENT_FLASK_VERSION ${VERSION_INCREMENT})
+                        NEW_NODE_VERSION=$(increment_version $CURRENT_NODE_VERSION ${VERSION_INCREMENT})
+                        
+                        echo "New Flask version: $NEW_FLASK_VERSION"
+                        echo "New Node version: $NEW_NODE_VERSION"
+                        
+                        # Export versions for later stages
+                        echo "FLASK_VERSION=$NEW_FLASK_VERSION" > versions.env
+                        echo "NODE_VERSION=$NEW_NODE_VERSION" >> versions.env
+                        
+                        cat versions.env
                     '''
                     
-                    // Calculate new versions
-                    def flaskVersion = calculateNewVersion('flask')
-                    def nodeVersion = calculateNewVersion('node')
-                    
-                    env.FLASK_VERSION = flaskVersion
-                    env.NODE_VERSION = nodeVersion
+                    // Load calculated versions into environment
+                    def versionProps = readFile('versions.env')
+                    versionProps.split('\n').each { line ->
+                        if (line.contains('=')) {
+                            def (key, value) = line.split('=', 2)
+                            env[key] = value
+                        }
+                    }
                     
                     echo "📋 Version Information:"
                     echo "Flask Version: ${env.FLASK_VERSION}"
