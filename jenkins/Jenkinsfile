@@ -85,14 +85,14 @@ pipeline {
                     """
                     
                     // Download existing version file or create new one and calculate versions
-                    sh '''
+                    sh """
                         echo "Checking for existing version file..."
-                        if aws s3 cp s3://${S3_BUCKET}/versions/${VERSION_FILE} . 2>/dev/null; then
+                        if aws s3 cp s3://${env.S3_BUCKET}/versions/${env.VERSION_FILE} . 2>/dev/null; then
                             echo "✅ Found existing version file"
-                            cat ${VERSION_FILE}
+                            cat ${env.VERSION_FILE}
                         else
                             echo "📝 Creating initial version file"
-                            cat > ${VERSION_FILE} << 'EOF'
+                            cat > ${env.VERSION_FILE} << 'VERSIONEOF'
 {
   "flask": {
     "current": "1.0.0",
@@ -103,58 +103,58 @@ pipeline {
     "history": ["1.0.0"]
   }
 }
-EOF
+VERSIONEOF
                         fi
                         
                         echo "=== Calculating new versions ==="
                         
                         # Extract current Flask version
-                        CURRENT_FLASK_VERSION=$(jq -r '.flask.current' ${VERSION_FILE})
-                        echo "Current Flask version: $CURRENT_FLASK_VERSION"
+                        CURRENT_FLASK_VERSION=\$(jq -r '.flask.current' ${env.VERSION_FILE})
+                        echo "Current Flask version: \$CURRENT_FLASK_VERSION"
                         
                         # Extract current Node version  
-                        CURRENT_NODE_VERSION=$(jq -r '.node.current' ${VERSION_FILE})
-                        echo "Current Node version: $CURRENT_NODE_VERSION"
+                        CURRENT_NODE_VERSION=\$(jq -r '.node.current' ${env.VERSION_FILE})
+                        echo "Current Node version: \$CURRENT_NODE_VERSION"
                         
                         # Function to increment version
                         increment_version() {
-                            local current_version=$1
-                            local increment_type=$2
+                            local current_version=\$1
+                            local increment_type=\$2
                             
                             # Split version into parts
-                            IFS='.' read -r major minor patch <<< "$current_version"
+                            IFS='.' read -r major minor patch <<< "\$current_version"
                             
-                            case $increment_type in
+                            case \$increment_type in
                                 "major")
-                                    major=$((major + 1))
+                                    major=\$((major + 1))
                                     minor=0
                                     patch=0
                                     ;;
                                 "minor")
-                                    minor=$((minor + 1))
+                                    minor=\$((minor + 1))
                                     patch=0
                                     ;;
                                 "patch"|*)
-                                    patch=$((patch + 1))
+                                    patch=\$((patch + 1))
                                     ;;
                             esac
                             
-                            echo "${major}.${minor}.${patch}"
+                            echo "\${major}.\${minor}.\${patch}"
                         }
                         
                         # Calculate new versions
-                        NEW_FLASK_VERSION=$(increment_version $CURRENT_FLASK_VERSION ${VERSION_INCREMENT})
-                        NEW_NODE_VERSION=$(increment_version $CURRENT_NODE_VERSION ${VERSION_INCREMENT})
+                        NEW_FLASK_VERSION=\$(increment_version \$CURRENT_FLASK_VERSION ${params.VERSION_INCREMENT})
+                        NEW_NODE_VERSION=\$(increment_version \$CURRENT_NODE_VERSION ${params.VERSION_INCREMENT})
                         
-                        echo "New Flask version: $NEW_FLASK_VERSION"
-                        echo "New Node version: $NEW_NODE_VERSION"
+                        echo "New Flask version: \$NEW_FLASK_VERSION"
+                        echo "New Node version: \$NEW_NODE_VERSION"
                         
                         # Export versions for later stages
-                        echo "FLASK_VERSION=$NEW_FLASK_VERSION" > versions.env
-                        echo "NODE_VERSION=$NEW_NODE_VERSION" >> versions.env
+                        echo "FLASK_VERSION=\$NEW_FLASK_VERSION" > versions.env
+                        echo "NODE_VERSION=\$NEW_NODE_VERSION" >> versions.env
                         
                         cat versions.env
-                    '''
+                    """
                     
                     // Load calculated versions into environment
                     def versionProps = readFile('versions.env')
