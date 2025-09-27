@@ -1,5 +1,3 @@
-Current working pipeline
-
 pipeline {
     agent {
         label 'Jenkins agent'
@@ -86,25 +84,6 @@ pipeline {
                         echo ""
                         echo "=== Inventory Content ==="
                         cat ansible/inventory/host.ini 2>/dev/null || echo "Inventory file not accessible"
-                    '''
-                }
-            }
-        }
-        
-        stage('Install Required Tools') {
-            when {
-                expression { 
-                    sh(script: 'which ansible', returnStatus: true) != 0 
-                }
-            }
-            steps {
-                script {
-                    echo "📦 Installing required tools..."
-                    sh '''
-                        echo "Installing Ansible and dependencies..."
-                        sudo apt update
-                        sudo apt install -y ansible python3-pip sshpass awscli
-                        echo "✅ Tools installed"
                     '''
                 }
             }
